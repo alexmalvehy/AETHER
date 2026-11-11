@@ -1,0 +1,24 @@
+name: Attach APK to Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - release-assets
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release-assets
+        uses: actions/checkout@v4
+        with:
+          ref: release-assets
+
+      - name: Upload APK to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload v2.4.0 AETHER-v2.4.0.apk --clobber -R ${{ github.repository }}
