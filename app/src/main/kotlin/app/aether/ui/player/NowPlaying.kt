@@ -297,6 +297,19 @@ fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> 
                     Modifier.at(stage.close).graphicsLayer { alpha = ((player.value - 0.86f) / 0.14f).coerceIn(0f, 1f) },
                     backdrop = null,
                 )
+                val context = LocalContext.current
+                val isCasting by container.cast.isCasting.collectAsStateWithLifecycle()
+                GlassCircle(
+                    Glyph.Cast,
+                    if (isCasting) "Casting" else "Cast",
+                    {
+                        haptics.tick()
+                        app.aether.player.CastManager.openOutputSwitcher(context)
+                    },
+                    Modifier.at(stage.cast).graphicsLayer { alpha = ((player.value - 0.86f) / 0.14f).coerceIn(0f, 1f) },
+                    lit = isCasting,
+                    backdrop = null,
+                )
                 // One key for the moving picture, kept: a song's film, or a music video itself.
                 run {
                     // A music video needs nothing else; a song's film needs the art from Apple's pages.
@@ -368,6 +381,7 @@ private fun Modifier.at(spot: Spot): Modifier = this.offset(spot.x, spot.y).size
 private class Stage(w: Dp, h: Dp, top: Dp, bottom: Dp) {
     private val edge = Space.edge
     val close = Spot(edge, top + 6.dp, 44.dp, 44.dp)
+    val cast = Spot(w - edge - 44.dp - 8.dp - 44.dp, top + 6.dp, 44.dp, 44.dp)
     val film = Spot(w - edge - 44.dp, top + 6.dp, 44.dp, 44.dp)
     val heading = Spot(edge + 56.dp, top + 2.dp, w - (edge + 56.dp) * 2, 52.dp)
     val grabber = Spot(w / 2 - 36.dp, top + 2.dp, 72.dp, 16.dp)

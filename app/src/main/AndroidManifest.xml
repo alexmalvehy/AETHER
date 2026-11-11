@@ -54,5 +54,17 @@
         <receiver
             android:name=".update.UpdateInstallReceiver"
             android:exported="false" />
+
+        <meta-data
+            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+            android:value="app.aether.player.CastOptionsProvider" />
+
+        <receiver
+            android:name="androidx.media3.session.MediaTransferReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.intent.action.TRANSFER_MEDIA" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

@@ -10,6 +10,8 @@ activityCompose = "1.13.0"
 coreKtx = "1.19.1"
 lifecycle = "2.11.0"
 media3 = "1.11.1"
+castFramework = "21.4.0"
+mediarouter = "1.7.0"
 coil = "3.6.3"
 # Backdrop's own shapes, at the version it depends on: continuous (Apple-style) corners its lens can measure.
 kyantShapes = "1.2.1"
@@ -52,6 +54,9 @@ media3-session = { module = "androidx.media3:media3-session", version.ref = "med
 media3-common = { module = "androidx.media3:media3-common", version.ref = "media3" }
 media3-datasource = { module = "androidx.media3:media3-datasource", version.ref = "media3" }
 media3-datasource-okhttp = { module = "androidx.media3:media3-datasource-okhttp", version.ref = "media3" }
+media3-cast = { module = "androidx.media3:media3-cast", version.ref = "media3" }
+play-services-cast-framework = { module = "com.google.android.gms:play-services-cast-framework", version.ref = "castFramework" }
+androidx-mediarouter = { module = "androidx.mediarouter:mediarouter", version.ref = "mediarouter" }
 
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
 coil-network-okhttp = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }

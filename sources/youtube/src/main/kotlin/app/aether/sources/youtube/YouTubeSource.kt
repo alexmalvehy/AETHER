@@ -95,8 +95,27 @@ class YouTubeSource(
             all += more.items
             next = more.continuation
         }
-        return Outcome.Ok(all.map { it.toEntity() }.filterIsInstance<app.aether.core.model.Playlist>().distinctBy { it.id })
+        return Outcome.Ok(
+            all.map { it.toEntity() }
+                .filterIsInstance<app.aether.core.model.Playlist>()
+                .filterNot { isLikedMusicPlaylist(it.id) }
+                .distinctBy { it.id },
+        )
     }
+
+    /** The signed-in listener's remote Liked Music collection (`LM` / `VLLM`). */
+    suspend fun likedSongs(): Outcome<PlaylistPage> =
+        yt.likedSongs().toOutcome { it.toPlaylistPage(YouTubeMusic.LIKED_PLAYLIST) }
+
+    /** Marks or unmarks a track as liked on YouTube Music (`like/like` or `like/removelike`). */
+    suspend fun like(id: MediaId, liked: Boolean): Outcome<Unit> {
+        if (id.source != SOURCE) return Outcome.Err(SourceError.Unsupported)
+        return yt.like(id.key, liked).toOutcome { }
+    }
+
+    /** Returns the latest extracted [PlaybackTracking] for [id], if resolved. */
+    fun playbackTracking(id: MediaId): PlaybackTracking? =
+        if (id.source == SOURCE) streams.playbackTracking(id.key) else null
 
     override suspend fun playlist(id: MediaId): Outcome<PlaylistPage> = yt.playlist(id.key).toOutcome { it.toPlaylistPage(id.key) }
 
@@ -128,4 +147,11 @@ class YouTubeSource(
     override suspend fun video(id: MediaId, maxHeight: Int): Outcome<VideoStream> = streams.video(id.key, maxHeight)
 
     override fun invalidate(id: MediaId) = streams.forget(id.key)
+
+    companion object {
+        private val LIKED_PLAYLIST_KEYS = setOf("LM", "VLLM", "VLPLLM")
+
+        fun isLikedMusicPlaylist(id: MediaId): Boolean =
+            id.source == SOURCE && id.key.removePrefix("VL") == YouTubeMusic.LIKED_PLAYLIST || id.key in LIKED_PLAYLIST_KEYS
+    }
 }

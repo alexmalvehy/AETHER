@@ -47,8 +47,8 @@ class AccountPlaylists(
 
     /** Fetches the account's playlists and brings the Library to match. */
     suspend fun sync() = lock.withLock {
-        // A library always holds Liked Music: nothing at all means the answer couldn't be read.
-        val found = (sources.primary.accountPlaylists() as? Outcome.Ok)?.value?.takeIf { it.isNotEmpty() } ?: return@withLock
+        val raw = (sources.primary.accountPlaylists() as? Outcome.Ok)?.value ?: return@withLock
+        val found = raw.filterNot { app.aether.sources.youtube.YouTubeSource.isLikedMusicPlaylist(it.id) }
         val mine = added
         val before = library.savedPlaylists.first().map { it.id.value }.toSet()
         val now = found.map { it.id.value }.toSet()

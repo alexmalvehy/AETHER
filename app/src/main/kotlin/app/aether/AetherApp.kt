@@ -20,8 +20,12 @@ import app.aether.player.PlaybackConnection
 import app.aether.core.data.EqualiserStore
 import app.aether.core.model.EqProfile
 import app.aether.core.data.PlaylistSnapshots
+import app.aether.player.CastManager
 import app.aether.player.PlaybackEnvironment
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import app.aether.sources.youtube.YouTubeHistoryTracker
 import app.aether.sources.youtube.YouTubeSource
 import app.aether.sources.youtube.YouTubeStreamResolver
 import app.aether.ui.common.Catalog
@@ -88,9 +92,16 @@ class Container(app: Application) {
 
     private val language = { Locale.getDefault().language.ifBlank { "en" } }
     private val region = { Locale.getDefault().country.takeIf { it.length == 2 } ?: "US" }
+    private val streamResolver = YouTubeStreamResolver(http, region)
     val youtube = YouTubeSource(
         YouTubeMusic(language = language, region = region, session = { account.cookies.value?.let(WebSession::parse) }),
-        YouTubeStreamResolver(http, region),
+        streamResolver,
+    )
+    val historyTracker = YouTubeHistoryTracker(
+        http = http,
+        cookies = { account.cookies.value },
+        region = region,
+        resolver = streamResolver,
     )
     // Kept songs written out to the Music folder are AETHER's own: listed under Kept, not twice.
     val local = LocalSource(app) { uri -> downloads.files.isKept(uri) }
@@ -103,6 +114,8 @@ class Container(app: Application) {
     /** Whether the phone can reach the internet now. */
     val online = Online(app)
     val accountPlaylists by lazy { AccountPlaylists(app, scope, account, sources, library, online) }
+    val favoritesSync by lazy { YouTubeFavoritesSync(app, scope, account, online, youtube, library) }
+    val cast: CastManager by lazy { CastManager(app, scope, app as? PlaybackEnvironment).also { it.initialize() } }
     val playback = PlaybackConnection(app, scope)
 
     /**
@@ -250,6 +263,8 @@ class AetherApp : Application(), PlaybackEnvironment, SingletonImageLoader.Facto
         container = Container(this)
         keepCoversOffline()
         container.accountPlaylists.start()
+        container.favoritesSync.start()
+        container.cast
     }
 
     /**
@@ -291,6 +306,33 @@ class AetherApp : Application(), PlaybackEnvironment, SingletonImageLoader.Facto
     override fun hearingCopy(id: MediaId, hearing: Boolean) = if (hearing) container.sources.hearing(id) else container.sources.notHearing(id)
     override fun adoptCopy(id: MediaId): Boolean = container.sources.adopt(id)
     override fun dropLateCopy(id: MediaId) = container.sources.dropLate(id)
+
+    override suspend fun reportPlayback(track: Track, positionMs: Long) {
+        if (!container.settings.syncHistory.value) return
+        if (track.id.source == container.youtube.id) {
+            container.historyTracker.reportPlayback(track.id.key, positionMs)
+        }
+    }
+
+    override val likedIds: kotlinx.coroutines.flow.Flow<Set<MediaId>>
+        get() = container.library.likedIds.map { ids -> ids.mapTo(HashSet()) { MediaId(it) } }
+
+    override suspend fun isLiked(id: MediaId): Boolean =
+        container.library.isLiked(id).first()
+
+    override suspend fun toggleLike(track: Track): Boolean {
+        val next = !container.library.isLiked(track.id).first()
+        container.library.setLiked(track, next)
+        return next
+    }
+
+    override suspend fun startRadio(track: Track): List<Track> {
+        val source = container.sources.of(track.id) ?: container.sources.primary
+        return (source.upNext(track.copy(context = null)) as? Outcome.Ok)?.value?.tracks.orEmpty()
+    }
+
+    override val castManager: app.aether.player.CastManager
+        get() = container.cast
 
     override fun sessionActivity(): PendingIntent? = PendingIntent.getActivity(
         this,

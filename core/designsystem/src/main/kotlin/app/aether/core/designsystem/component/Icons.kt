@@ -25,7 +25,7 @@ import app.aether.core.designsystem.theme.Ink
  * hairline marks, its Fill for play, pause, skip and a liked heart: one family, drawn by one hand);
  * the rooms' own marks on the tab bar (Listen, Discover, Library) and the gear stay AETHER's.
  */
-enum class Glyph { Play, Pause, Next, Previous, Shuffle, Repeat, RepeatOne, Heart, HeartFilled, Queue, Lyrics, More, Down, Back, Search, Close, Plus, Check, Download, Listen, Discover, Library, Profile, Gear, Share, Video, Forward, Edit, Trash }
+enum class Glyph { Play, Pause, Next, Previous, Shuffle, Repeat, RepeatOne, Heart, HeartFilled, Queue, Lyrics, More, Down, Back, Search, Close, Plus, Check, Download, Listen, Discover, Library, Profile, Gear, Share, Video, Cast, Forward, Edit, Trash }
 
 @Composable
 fun Icon(glyph: Glyph, modifier: Modifier = Modifier, size: Dp = 22.dp, color: Color = Ink.White, weight: Float = 1.4f) {
@@ -157,6 +157,12 @@ fun Icon(glyph: Glyph, modifier: Modifier = Modifier, size: Dp = 22.dp, color: C
                 drawRoundRect(color, p(4f, 5f), Size(16f * u, 2.2f * u), androidx.compose.ui.geometry.CornerRadius(1f * u))
                 drawRoundRect(color, p(9.5f, 2.8f), Size(5f * u, 2.6f * u), androidx.compose.ui.geometry.CornerRadius(1f * u))
                 drawPath(path { moveTo(5.5f * u, 8.6f * u); lineTo(18.5f * u, 8.6f * u); lineTo(17.4f * u, 20.2f * u); quadraticTo(17.3f * u, 21f * u, 16.4f * u, 21f * u); lineTo(7.6f * u, 21f * u); quadraticTo(6.7f * u, 21f * u, 6.6f * u, 20.2f * u); close() }, color)
+            }
+            Glyph.Cast -> {
+                drawPath(path { moveTo(3f * u, 9f * u); lineTo(3f * u, 6f * u); lineTo(21f * u, 6f * u); lineTo(21f * u, 19f * u); lineTo(14f * u, 19f * u) }, color, style = stroke)
+                drawCircle(color, 1.2f * u, p(4f, 18.5f))
+                drawArc(color, -90f, 90f, false, p(0f, 14.5f), Size(8f * u, 8f * u), style = stroke)
+                drawArc(color, -90f, 90f, false, p(-3.5f, 11f), Size(15f * u, 15f * u), style = stroke)
             }
         }
     }

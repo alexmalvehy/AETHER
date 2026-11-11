@@ -66,12 +66,38 @@ class Library(private val db: AetherDatabase, private val now: () -> Long = Syst
     val likedIds: Flow<Set<String>> = dao.likedIds().map { it.toSet() }
     fun isLiked(id: MediaId): Flow<Boolean> = dao.isLiked(id.value)
 
+    /** Invoked after a local [setLiked] mutation so two-way sync can push the change upstream. */
+    @Volatile var onLikeChanged: ((Track, Boolean) -> Unit)? = null
+
     suspend fun setLiked(track: Track, liked: Boolean) {
         if (liked) {
             remember(listOf(track))
             dao.like(LikedRow(track.id.value, now()))
         } else {
             dao.unlike(track.id.value)
+        }
+        onLikeChanged?.invoke(track, liked)
+    }
+
+    /**
+     * Ingests tracks from the remote Liked Music collection (`LM` / `VLLM`) directly into local
+     * favorites storage without re-triggering [onLikeChanged].
+     */
+    suspend fun ingestRemoteLikes(remoteTracks: List<Track>, removedIds: Set<String> = emptySet()) {
+        if (remoteTracks.isEmpty() && removedIds.isEmpty()) return
+        val existingIds = dao.likedIds().first().toSet()
+        val newTracks = remoteTracks.filter { it.id.value !in existingIds }
+        if (remoteTracks.isNotEmpty()) {
+            remember(remoteTracks)
+        }
+        val baseTime = now()
+        db.withWriteTransaction {
+            newTracks.forEachIndexed { index, track ->
+                dao.like(LikedRow(track.id.value, baseTime - index))
+            }
+            removedIds.forEach { id ->
+                dao.unlike(id)
+            }
         }
     }
 
@@ -90,12 +116,15 @@ class Library(private val db: AetherDatabase, private val now: () -> Long = Syst
 
     val albums: Flow<List<Album>> = dao.saved(ALBUM).map { it.mapNotNull(::albumFromJson) }
     val artists: Flow<List<Artist>> = dao.saved(ARTIST).map { it.mapNotNull(::artistFromJson) }
-    val savedPlaylists: Flow<List<Playlist>> = dao.saved(PLAYLIST).map { it.mapNotNull(::playlistFromJson) }
+    val savedPlaylists: Flow<List<Playlist>> = dao.saved(PLAYLIST).map { rows ->
+        rows.mapNotNull(::playlistFromJson).filterNot { it.id.source == "ytm" && it.id.key.removePrefix("VL") == "LM" }
+    }
     fun isSaved(id: MediaId): Flow<Boolean> = dao.isSaved(id.value)
 
     suspend fun save(album: Album, keep: Boolean) = if (keep) dao.save(SavedRow(album.id.value, ALBUM, album.toSavedJson(), now())) else dao.unsave(album.id.value)
     suspend fun follow(artist: Artist, keep: Boolean) = if (keep) dao.save(SavedRow(artist.id.value, ARTIST, artist.toSavedJson(), now())) else dao.unsave(artist.id.value)
     suspend fun save(playlist: Playlist, keep: Boolean) = if (keep) dao.save(SavedRow(playlist.id.value, PLAYLIST, playlist.toSavedJson(), now())) else dao.unsave(playlist.id.value)
+    suspend fun unsave(id: MediaId) = dao.unsave(id.value)
 
     // --- The listener's playlists and folders ---
 

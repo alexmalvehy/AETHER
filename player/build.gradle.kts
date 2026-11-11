@@ -23,6 +23,9 @@ tasks.withType<KotlinCompile>().configureEach {
 dependencies {
     api(project(":core:model"))
     api(libs.media3.session)
+    api(libs.media3.cast)
+    api(libs.play.services.cast.framework)
+    api(libs.androidx.mediarouter)
     implementation(libs.media3.exoplayer)
     // A source's copy may come as a DASH or HLS manifest (Hi-Res copies often do): open media only.
     implementation(libs.media3.exoplayer.dash)

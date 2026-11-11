@@ -119,7 +119,8 @@ fun LibraryScreen() {
     val online by container.online.now.collectAsStateWithLifecycle()
     // The catalogue's playlists in the Library: saved ones, and ones songs were kept from.
     val fromCatalogue = remember(saved, snapshots) {
-        saved + snapshots.values.filter { it.keptFrom && saved.none { s -> s.id == it.playlist.id } }.map { it.playlist }
+        (saved + snapshots.values.filter { it.keptFrom && saved.none { s -> s.id == it.playlist.id } }.map { it.playlist })
+            .filterNot { app.aether.sources.youtube.YouTubeSource.isLikedMusicPlaylist(it.id) }
     }
     // The phone's own music: read only with the listener's permission.
     val music = rememberPhoneMusic()
@@ -285,6 +286,7 @@ internal fun PlayRow(tracks: List<Track>) {
 fun LikedScreen() {
     val container = LocalContainer.current
     val actions = LocalActions.current
+    LaunchedEffect(Unit) { container.favoritesSync.refresh() }
     val liked by container.library.liked.collectAsStateWithLifecycle(emptyList())
     LazyColumn(Modifier.fillMaxSize(), state = rememberPageListState(), contentPadding = PaddingValues(bottom = 0.dp)) {
         item { BackLine() }

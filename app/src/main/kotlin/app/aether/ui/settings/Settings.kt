@@ -92,6 +92,7 @@ fun SettingsScreen() {
     val lyricsStyle by settings.lyricsStyle.collectAsStateWithLifecycle()
     val crossfade by settings.crossfade.collectAsStateWithLifecycle()
     val fullScreen by settings.fullScreen.collectAsStateWithLifecycle()
+    val syncHistory by settings.syncHistory.collectAsStateWithLifecycle()
     val songVideo by settings.songVideo.collectAsStateWithLifecycle()
     val romanise by settings.romanise.collectAsStateWithLifecycle()
     val sourcesOff by settings.lyricsSourcesOff.collectAsStateWithLifecycle()
@@ -148,6 +149,11 @@ fun SettingsScreen() {
                     }
                 }
                 Rule()
+                Toggle(
+                    "Sync playback history with YouTube Music",
+                    "When signed in, songs you play continuously are reported upstream so they appear in your YouTube Music history and Year-End Recap.",
+                    syncHistory,
+                ) { settings.setSyncHistory(!syncHistory) }
             }
         }
         item {

@@ -97,6 +97,24 @@ interface PlaybackEnvironment {
     /** The late copy wouldn't play: it isn't offered again for a while. */
     fun dropLateCopy(id: MediaId) {}
     fun sessionActivity(): PendingIntent?
+
+    /** Reports continuous playback of [track] upstream when history sync is enabled. */
+    suspend fun reportPlayback(track: Track, positionMs: Long) {}
+
+    /** Observed set of liked track IDs so the system media notification heart updates live. */
+    val likedIds: Flow<Set<MediaId>> get() = emptyFlow()
+
+    /** Checks whether [id] is currently in the listener's Liked Songs. */
+    suspend fun isLiked(id: MediaId): Boolean = false
+
+    /** Toggles the liked state of [track] (local DB + two-way YouTube sync) and returns the new state. */
+    suspend fun toggleLike(track: Track): Boolean = false
+
+    /** Fetches the radio mix for [track] via InnerTube `next` endpoint with radio params. */
+    suspend fun startRadio(track: Track): List<Track> = emptyList()
+
+    /** Optional Google Cast & System Output Switcher manager. */
+    val castManager: CastManager? get() = null
 }
 
 /**
@@ -118,10 +136,14 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var env: PlaybackEnvironment
     private lateinit var player: ExoPlayer
     private var session: MediaLibrarySession? = null
+    private lateinit var notificationActions: NotificationActionHandler
     private var saveJob: Job? = null
     /** The song last recovered, how many times in a row, and when last. */
     private var retried: Triple<String, Int, Long>? = null
     private var counted: String? = null
+    private var trackedHistory: String? = null
+    private var continuousPlayKey: String? = null
+    private var continuousPlayMs: Long = 0L
 
     /** The bit-perfect route watcher (Android 14 and later); typed loosely so older phones never load it. */
     private var bitPerfect: Any? = null
@@ -180,9 +202,11 @@ class PlaybackService : MediaLibraryService() {
         setMediaNotificationProvider(
             androidx.media3.session.DefaultMediaNotificationProvider.Builder(this).build().apply { setSmallIcon(R.drawable.aether_mark) },
         )
+        notificationActions = NotificationActionHandler(scope, env, { player }, { session })
         session = MediaLibrarySession.Builder(this, player, Callback())
             .apply { env.sessionActivity()?.let { setSessionActivity(it) } }
             .build()
+        notificationActions.refreshCustomLayout()
         if (Build.VERSION.SDK_INT >= 34) {
             bitPerfect = BitPerfect(this, player) { now ->
                 route = now
@@ -198,6 +222,7 @@ class PlaybackService : MediaLibraryService() {
         }
         scope.launch { env.crossfadeSeconds.collect { crossfader.seconds = it } }
         scope.launch { env.lateCopies.collect(::carryOver) }
+        scope.launch { env.likedIds.collect { notificationActions.refreshCustomLayout() } }
         scope.launch { restore() }
         scope.launch { countPlays() }
     }
@@ -366,6 +391,17 @@ class PlaybackService : MediaLibraryService() {
             if (!player.isPlaying) continue
             val item = player.currentMediaItem ?: continue
             val key = "${player.currentMediaItemIndex}|${item.mediaId}"
+            if (continuousPlayKey != key) {
+                continuousPlayKey = key
+                continuousPlayMs = 2_000L
+            } else {
+                continuousPlayMs += 2_000L
+            }
+            if (trackedHistory != key && continuousPlayMs >= 12_000L) {
+                trackedHistory = key
+                val pos = player.currentPosition.coerceAtLeast(12_000L)
+                item.toTrack()?.let { t -> scope.launch(Dispatchers.IO) { runCatching { env.reportPlayback(t, pos) } } }
+            }
             val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: Long.MAX_VALUE
             if (counted != key && player.currentPosition >= minOf(30_000L, duration / 2)) {
                 counted = key
@@ -379,7 +415,13 @@ class PlaybackService : MediaLibraryService() {
         override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) = saveSoon()
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             retried = null
+            continuousPlayKey = null
+            continuousPlayMs = 0L
             if (pendingCopy?.value != mediaItem?.mediaId) pendingCopy = null
+            notificationActions.refreshCustomLayout()
+            if (mediaItem != null && env.castManager?.isCasting?.value == true) {
+                env.castManager?.transferToCast(mediaItem, 0L, player.playWhenReady)
+            }
             saveSoon()
         }
 
@@ -422,6 +464,29 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private inner class Callback : MediaLibrarySession.Callback {
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): MediaSession.ConnectionResult {
+            val currentTrack = player.currentMediaItem?.toTrack()
+            val isLiked = currentTrack?.let { runBlocking { runCatching { env.isLiked(it.id) }.getOrDefault(false) } } ?: false
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(notificationActions.availableSessionCommands())
+                .setCustomLayout(notificationActions.buildCustomLayout(isLiked))
+                .build()
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: androidx.media3.session.SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<androidx.media3.session.SessionResult> {
+            notificationActions.onCustomCommand(session, customCommand, args)?.let { return it }
+            env.castManager?.onCustomCommand(session, customCommand, args)?.let { return Futures.immediateFuture(it) }
+            return super.onCustomCommand(session, controller, customCommand, args)
+        }
+
         override fun onAddMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>): ListenableFuture<MutableList<MediaItem>> =
             Futures.immediateFuture(mediaItems.map { it.playable() }.toMutableList())
 
