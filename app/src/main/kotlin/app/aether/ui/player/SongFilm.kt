@@ -1,5 +1,6 @@
 package app.aether.ui.player
 
+import app.aether.core.model.CanvasSource
 import android.content.Context
 import android.net.ConnectivityManager
 import androidx.compose.animation.core.Animatable
@@ -73,24 +74,29 @@ class FilmSlot(val track: Track) {
  * it fades as the next cover arrives. Silent and looping: it never touches the music.
  */
 @Composable
-fun SongFilm(slot: FilmSlot, playing: Boolean, onGone: () -> Unit, fade: FilmFade, modifier: Modifier = Modifier) {
+fun SongFilm(slot: FilmSlot, playing: Boolean, onGone: () -> Unit, fade: FilmFade, modifier: Modifier = Modifier, ready: Boolean = true) {
     val container = LocalContainer.current
     val context = LocalContext.current
     val track = slot.track
     val wanted by container.settings.songVideo.collectAsStateWithLifecycle()
     val consent by container.settings.artistArt.collectAsStateWithLifecycle()
     val saver by container.settings.efficient.collectAsStateWithLifecycle()
-    val on = wanted && consent && !saver && !slot.leaving && track.id.source != container.local.id
+    // Apple is asked only with the listener's consent; the community's index sends nothing, and needs none.
+    val on = wanted && !saver && !slot.leaving && track.id.source != container.local.id
     var begun by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
+    // Only once Now Playing has been open with this song ([ready]): a film is never fetched for a
+    // song nobody looked at. Once begun, it stays (paused while Now Playing is closed).
+    LaunchedEffect(ready) {
+        if (!ready || begun) return@LaunchedEffect
         delay(BeginAfterMs)
         begun = fastEnough(context)
     }
-    val url by produceState(container.albumArt.cachedSongFilm(track.id.value), on, begun) {
+    val canvas by produceState(container.canvases.cached(track.id.value, consent), on, begun, consent) {
         if (!on || !begun || value != null) return@produceState
         val artist = track.artists.firstOrNull()?.name ?: return@produceState
-        value = container.albumArt.findSongFilm(track.id.value, track.title, artist, track.album?.title)
+        value = container.canvases.find(track.id.value, track.title, artist, track.album?.title, apple = consent)
     }
+    val url = canvas?.url
     var framed by remember { mutableStateOf(false) }
     var gaveUp by remember { mutableStateOf(false) }
     var aspect by remember { mutableFloatStateOf(0f) }
@@ -104,6 +110,8 @@ fun SongFilm(slot: FilmSlot, playing: Boolean, onGone: () -> Unit, fade: FilmFad
         if (slot.leaving) onGone()
     }
     val showing by remember { derivedStateOf { slot.up.value > 0.002f } }
+    // The fade round the dial, grained so it falls off without bands (Android 13 on; the stops before).
+    val ringFade = rememberRingFade()
     val film = url
     if (film != null && begun && !gaveUp && (on || showing)) {
         Box(
@@ -117,7 +125,7 @@ fun SongFilm(slot: FilmSlot, playing: Boolean, onGone: () -> Unit, fade: FilmFad
                     val outer = fade.full.toPx()
                     val start = fade.gone.toPx() / outer
                     val span = 1f - start
-                    val rings = Brush.radialGradient(
+                    val rings = ringFade?.at(size.width / 2f, fade.pivotY.toPx(), fade.gone.toPx(), outer) ?: Brush.radialGradient(
                         0f to Color.Transparent,
                         start to Color.Transparent,
                         start + span * 0.25f to Color.Black.copy(alpha = 0.12f),
@@ -136,6 +144,8 @@ fun SongFilm(slot: FilmSlot, playing: Boolean, onGone: () -> Unit, fade: FilmFad
         ) {
             HeroFilm(
                 url = film,
+                // Apple's films are HLS playlists; the community's covers are video files.
+                playlist = canvas?.from != CanvasSource.COMMUNITY,
                 playing = playing && !slot.leaving,
                 onFirstFrame = { framed = true },
                 onVideoAspect = { aspect = it },

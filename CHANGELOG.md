@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-25
+
+### Fixed
+- A song just kept went to the foot of Kept, out of sight in a long list: Kept stands newest first now, the song kept a moment ago at the top.
+- Keeping songs is fast. YouTube sends a song asked for in one long request at about the speed it plays (BitChord measured 15 kB/s), so keeping one took minutes; songs now come in short ranges, each at the connection's full speed, as BitChord's do. The song playing buffers ahead faster for it, and so do Automix's look at the next song and a song sent to a TV.
+- 16-bit FLAC played as loud, fast static on Samsung phones (#15, #16). Samsung's own FLAC decoder garbles a file when asked for float, which every song was; FLAC now goes to Android's own decoder (BitChord's fix), and a decoder is asked for float only where a float track will really open.
+- An artist's music videos play one after another: tapping one plays it with the rest of the row after it, instead of stopping when it ends.
+- Ending a cast brings the music back to the headphones or speaker it came from, not the phone's own speaker.
+- As the music goes out to a TV, the whole screen is drawn up after it: it used to come away from the screen's edges and show gaps at the sides. It's held at the edges now and stretches toward the top, as a sheet in a frame would; a download's wave too.
+- The fade round the dial has no bands: it falls off along one smooth curve, with a grain finer than a step of colour.
+
+### Added
+- Apple Lossless (ALAC) plays everywhere, with Gramophone's decoder: Samsung phones have none of their own.
+- ReplayGain (Settings, Sound), Gramophone's: each song brought to one loudness by the levels its file carries, by song or by album, never past its own peaks.
+- Bit-perfect to a USB DAC (Settings, Sound, Android 14 and later), BitChord's: lossless songs go to the DAC untouched, at their own sample rate and bit depth. The DAC sets the volume then, and the equaliser, ReplayGain, crossfade and Automix leave those songs alone.
+- Words on the cover (Settings, Now Playing): off, the cover is the picture alone, with none of its printed words or lines of the song.
+- Home-screen widgets, 2×2 and 4×2 (BitChord's, in AETHER's face): the song playing, its cover going out to black in rings round its keys as Now Playing's film goes out round the dial, its name in Now Playing's capitals and its artists in the book serif, and Now Playing's keys: previous, play or pause, next. A tap anywhere else opens Now Playing. Either can be resized into the other's shape. The play key turns the moment it's touched, and the next song's picture is drawn while this one plays, so a change shows its cover with its name.
+- Light from the cover (Settings): off, Now Playing is black with only the cover's faint glow, as it was before the light.
+- Latin letters first (Settings, with Words in Latin letters on): in Verse, the Latin letters are sung as the line, large, each word lighting as its own word is sung, and the words in their own script go beneath them, smaller.
+- Sync with YouTube Music: a key on every playlist, on Liked songs, and on your own YouTube Music playlists' pages. On, the playlist and its copy in your account are kept as one, both ways: a song added or taken out on either side is added or taken out on the other, and so is a new name. A playlist made in AETHER is made in your account too (private); one of your account's becomes one of AETHER's, kept in step with it; Liked songs follow your account's liked songs. Its arrows turn while it syncs. Off, it stays as it last was. Deleting a playlist in AETHER leaves its copy in your account.
+- Every list can be put in order: the Library's playlists, Kept, the phone's music, Songs (and Liked songs' page), albums and artists, and a playlist's page. A key under the list's keys names the order it's in; touched, the orders that list can honour open from it in a pane of glass, the one in force ticked: alphabetical, A to Z or Z to A; date added, newest first; date modified, newest first, where something can change (your playlists, the phone's files); and for songs their artist, album or length. Each list keeps its own, and starts newest first.
+
+### Changed
+- A playlist's order is chosen from that key too, in place of the bar of orders under its keys, and it can now run Z to A. A YouTube playlist has no Date added: YouTube doesn't say when a song came to it.
+- The equaliser and Automix's filters now shape every song, FLAC and other hi-res files included: Media3 had been taking those past them. The sound path is BitChord's, ported whole, which also lets Automix's loop mix run.
+- On the phone's own speaker, songs go out as 16-bit, as BitChord's do; through a DAC or headphones that take it, as float, every bit of a 24-bit file kept.
+- Bit-perfect is now the listener's choice, for lossless songs; streams no longer switch a DAC into it by themselves.
+- Now Playing's cover, as itself, is shown whole: square, as it was made, not cut to the print's 4:5. The prints stay 4:5.
+- The cover's light behind Now Playing is BitChord's mesh, Apple Music's backdrop: four soft lights in the cover's own colours over a dim ground of the first, across the top of the screen, slowly orbiting while the song plays. A new song's light fades in over the last one's on a spring, its colours read while the song before it plays, so it comes in with its cover. It goes out round the dial in the same rings as before, gives way to a song's film, and holds still while a music video plays over it. Drawn once and kept until it moves, it costs opening and closing Now Playing about what no light would. With motion reduced it never moves.
+
+## [3.0.0] - 2026-11-20
+
+### Added
+- Play on a TV: the cast key beside the video key on Now Playing finds the TVs and speakers with Google Cast on your Wi-Fi. The phone stays the source (it serves each song to the TV, and the queue stays yours), its volume keys set the TV's volume, and "This phone" brings the music back where the TV had got to. As the music leaves, the screen is drawn up after it from the top, a wave running down through it, as a download's does coming in.
+- AETHER's own screen for the TV, in `site/cast/`: Now Playing on its side, the print in the middle with its wipe and darkroom, the dial standing on the right edge, the cover's film across the whole screen. Each song arrives up through the screen on a wave from the foot. The words come up full screen with the TV remote's OK key, or with every song from Settings: Lyrics on the TV. It shows once it's registered with Google Cast and its id is built in (docs/cast.md); 3.0.0 isn't, so a TV plays AETHER on Google's standard screen, and the Lyrics on the TV setting stays hidden until then.
+- Moving covers from the community's index of looping covers (the one BitChord and LastWave ask), for songs Apple Music has no film for: played where the film plays, as it does. The index is fetched whole and matched on the phone; nothing about what you play is sent.
+- A sleep timer (BitChord's), in Now Playing's menu: after this song, 15, 30 or 45 minutes, an hour, or any length up to twelve hours in five-minute steps. Its row counts down to the pause. With a crossfade or Automix on, the song fades out at its end instead of running into the next; on repeat, it pauses as the song comes round.
+- AETHER looks for a newer version every time it's opened, not only every few hours, and says so at once: on its sheet, or, while Now Playing is open, in a few words at the foot of the screen until you close it.
+- Automix (Settings, Sound), BitChord's: each song is measured on the phone (tempo, beats and bars, phrases, key, where the voice is) and run into the next as a DJ would, in time, on the bar, with the bass handed over, a filter or an echo where it suits; a crossfade where two songs can't be mixed. Now Playing marks on the dial where the mix will be, and the cover turns into the next song's in a cloud of its own coloured dots for exactly as long as the mix lasts. A song is measured once and remembered; the next song is fetched while this one plays, then played from what was fetched.
+- Up next during Automix: the song being mixed in is shown as such ("Mixing in") and stays put, since it's already playing.
+- The queue keeps going on its own, as BitChord's AutoPlay does: ten songs suggested by the playing song are kept waiting after yours, topped up as each song begins, with the app closed too. No song comes twice as its own video, and no artist takes over.
+- Playlists in and out. Import (in the Library beside New playlist, and in Settings) brings playlists in from a file (AETHER's own, M3U, CSV such as Exportify's, a list of songs, or Spotify's data download with every playlist and your liked songs) or a public Spotify or Apple Music playlist's link. Each song is found on YouTube Music as exactly as AETHER can: a live version never stands in for the studio one, and what can't be found is listed by name. Nothing is doubled: a playlist imported again only gains the songs it's missing. Export, in a playlist's menu, writes it as an AETHER file, M3U8 or CSV; Settings writes every playlist at once.
+- Explicit songs are marked, as the catalogues mark them: a small grey E at the head of the song's name, in every list, the mini player, Now Playing, a song's menu and what's coming down, and on cards beside who made it.
+
+### Changed
+- The Library scrolls more smoothly, the first time through most of all (measured on the A059: half as many frames again drawn in the same scroll, and its slowest frames up to 40% shorter). A folder's panels are pictures painted once, not outlines worked out again as each row comes into view, and the frost at the screen's edges fades in at the quarter resolution it's made at. Both look exactly as they did.
+- A music video plays without lyrics: its sound runs to its own clock (an intro, a scene, a longer cut), so words timed to the song drifted from it, and a video's title found other songs' words. The lyrics key says so.
+- An album YouTube Music files by its music videos (KR$NA's "Yours Truly": 14 of its 15 tracks) plays as its songs: each video's song is found (YouTube Music's own pairing when signed in, then its Songs shelf, the album's songs first) and takes its place, number and all. A video whose song isn't found stays as it is.
+- The mini player grows into Now Playing the way the Dynamic Island does: the pill itself grows, its dark glass and lit rim to the screen's edges, its cover flying up to be the print, and Now Playing's parts coming in inside it once there's room. Springs with Apple's bounce: the print lands with a little give, and closing (Back, the key, or a pull from anywhere), the pill takes the landing and settles. A song with a film shows its cover flying, and the film comes up over it as it lands.
+- A folder flies home into wherever its place is now: scroll the list while it's still in the air and it lands exactly in its place, with no shaking (it used to land where its place had been, vanish, and pop up somewhere else). Its page slides in and out as every page does.
+- Android's back gesture moves AETHER's own pages with your thumb, as swiping back does on iPhone, from wherever the page is; let go short and the page comes back.
+- Back closes what's on top first: Up Next, a menu, a question, a playlist's search field. (With Up Next open, Back used to close all of Now Playing.)
+- Automix: a song you move to play next is measured first, and the mix's mark on the dial glides to its new place.
+- Now Playing opens and closes without first building itself or letting everything go. A playlist's page has its keys and its songs as it slides in, not after it lands: the library remembers each playlist, and the songs on show are made in the first few frames.
+- Liked songs is a folder like every playlist: it flies to the head of its page.
+- Pages, folders and the glass over them are lighter to move: a page sliding is one picture while it moves, and a flying folder paints its outlines once, not every frame.
+- Now Playing and the lyrics can be pulled down from the middle of the screen. In the word-by-word lyrics a pull closes them while they follow the song; read back by hand, the page scrolls first.
+- The dial: a new song's hand sweeps back to its start instead of jumping there; scrubbing starts from where the hand is, with no flash to the beginning, and doesn't flick back when let go.
+- Search lists songs first, always, then artists, albums, videos, playlists and podcasts: five songs, then More songs for the rest, and more again from YouTube Music. The top result leads its own kind instead of standing above the songs, and typed suggestions put songs first too.
+- Names of pages fit their place: an artist's name too wide for the screen shrinks to fit whole instead of breaking inside a word ("PinkPanthere / ss"), and a name that needs two lines breaks only at a space and is set smaller, so it doesn't stand huge. Playlists', albums' and your own name follow the same rule.
+
+### Fixed
+- A page opened while another is still flying home comes in over it: the folder goes on home under the new page instead of over it, vanishing as it landed, and the page beneath no longer jumps back as the new one starts.
+- A folder touched while a card's page was still arriving no longer flew onto that page, and two folders touched at once no longer left the first page saying its playlist was gone while it loaded.
+- Search: every song shows its length. The mixed results give one only to the top result's songs; the rest are asked of YouTube Music's queue, all at once.
+- Wrong lyrics: KuGou's answers are held to the song now (asked for two lesser songs called "Espresso" it gave Tchaikovsky's "June" and "Spice Up Your Life"). A library that wants a key for a song counts as not having it, and writers' names or a "Title - Artist" line at the head of a file no longer show as sung lines.
+- Now Playing closing into the pill no longer flickers after its bounce. The bounce carried the island a hair past closed and back, and coming back it showed again over the pill for about a sixth of a second, its darker tint in place of the pill's glass. Once a close has put it away it stays away until it's opened again.
+- With Automix on, a song set to loop (repeat on with only it in the queue, or the same song queued twice running) no longer mixes into itself, which made its second time through stutter: it comes round as a repeat does.
+- Two folders touched at once no longer both open, one onto the other: while a page is arriving, a second is ignored, as on iPhone.
+- A playlist shown twice on a page (in two sections of Listen) opens from the copy you touched.
+- Automix: no more crackling as the next song comes in. Tempo changes no longer restart the audio path (each one clicked), and two songs' peaks can't sum past full scale. A phone that's warm (charging, say) still measures songs, gently, instead of falling back to plain crossfades.
+- Automix's change of cover runs smoothly at the screen's full rate.
+- A song dragged to a new place in a playlist follows the finger instead of shaking on its way.
+- Moving songs in Up Next works as BitChord's does: the song in hand stays under your finger whatever the list does, the songs around it slide aside as you go so you see where it will land, and the list scrolls on when you carry it to the top or the foot. Drag it by its handle, or hold it anywhere first.
+- In search, a top result's songs named nobody: they're credited to the artist the result is. Songs searched for show their length and album wherever YouTube Music gives them.
+- AETHER could close by itself when one of your own sources was slow to answer: its answer was read, and closed, on the main thread, which Android forbids. Sources are now always asked off it, and a source's answer can no longer bring AETHER down however it misbehaves.
+- Lyrics are read off the main thread too: a long answer sometimes failed for the same reason, and showed as no lyrics.
+
 ## [2.3.0] - 2026-11-11
 
 ### Fixed
@@ -95,7 +173,9 @@ The first release.
 - **Cards:** a metal charge card of your profile or any song, black or silver, at 1080 by 1920.
 - **Privacy:** no ads, no analytics, no tracking, no account and no server of ours.
 
-[Unreleased]: https://github.com/GHOSTxASR/AETHER/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/GHOSTxASR/AETHER/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/GHOSTxASR/AETHER/compare/v3.0.0...v3.1.0
+[3.0.0]: https://github.com/GHOSTxASR/AETHER/compare/v2.3.0...v3.0.0
 [2.3.0]: https://github.com/GHOSTxASR/AETHER/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/GHOSTxASR/AETHER/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/GHOSTxASR/AETHER/compare/v2.0.0...v2.1.0

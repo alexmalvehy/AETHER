@@ -72,7 +72,8 @@ internal class PrefsUpdateStore(context: Context) : UpdateStore {
 
 /**
  * AETHER's own updates, as PODIUM's. When the app comes to the front (release builds, unless turned
- * off), GitHub is asked for the newest release, at most every [CHECK_EVERY_MS]. A newer one is offered
+ * off), GitHub is asked for the newest release: afresh the first time each launch (BitChord's "once per
+ * launch", so a release out since the last look is seen at once), then at most every [CHECK_EVERY_MS]. A newer one is offered
  * on a sheet with its notes in short: download and install it right there, open its page on GitHub, or
  * leave that version be. Put away, the offer comes back after [REMIND_AFTER_MS].
  *
@@ -116,6 +117,9 @@ class UpdateCenter internal constructor(
 
     private var job: Job? = null
 
+    /** This launch has asked GitHub itself; until it has, a remembered answer won't do. */
+    private var askedThisLaunch = false
+
     fun setAutomatic(on: Boolean) {
         store.automatic = on
         _automatic.value = on
@@ -126,8 +130,8 @@ class UpdateCenter internal constructor(
         if (!checksByItself || !store.automatic || job?.isActive == true || _state.value != UpdateState.Idle) return
         job = scope.launch {
             val release = try {
-                val recent = store.lastAnswer?.takeIf { now() - store.lastCheckedAt < CHECK_EVERY_MS }
-                Releases.parse(recent ?: fetch())
+                val recent = store.lastAnswer?.takeIf { askedThisLaunch && now() - store.lastCheckedAt < CHECK_EVERY_MS }
+                Releases.parse(recent ?: fetch().also { askedThisLaunch = true })
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

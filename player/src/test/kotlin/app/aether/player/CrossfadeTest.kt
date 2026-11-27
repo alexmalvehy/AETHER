@@ -1,10 +1,7 @@
 package app.aether.player
 
 import androidx.media3.common.C
-import androidx.media3.common.audio.AudioProcessor
 import org.junit.Test
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -73,25 +70,24 @@ class CrossfadeTest {
     @Test
     fun `the meter stamps its readings with the song's position and changes nothing`() {
         val meter = AudioMeter()
-        meter.configure(AudioProcessor.AudioFormat(48_000, 1, C.ENCODING_PCM_16BIT))
-        meter.flush(AudioProcessor.StreamMetadata(5_000_000))
+        meter.configure(48_000, 1)
+        // Where the sink says the stream starts in the song (what Media3 tells its own processors).
+        meter.onStreamStart(5_000_000)
         val listening = meter.listen()
-        // 100 ms of a 1 kHz tone at half scale.
+        // 100 ms of a 1 kHz tone at half scale, in the sink's float block.
         val frames = 4_800
-        val input = ByteBuffer.allocateDirect(frames * 2).order(ByteOrder.nativeOrder())
-        for (i in 0 until frames) input.putShort((sin(2 * PI * 1_000 * i / 48_000) * 16_384).toInt().toShort())
-        input.flip()
-        val sent = ByteArray(frames * 2).also { input.duplicate().get(it) }
-        meter.queueInput(input)
-        val out = meter.output
-        val got = ByteArray(out.remaining()).also { out.get(it) }
-        assertTrue(sent.contentEquals(got), "every byte passes as it came")
+        val block = app.aether.player.automix.AudioBlock(1, frames)
+        block.reset(frames)
+        for (i in 0 until frames) block.samples[i] = (sin(2 * PI * 1_000 * i / 48_000) * 0.5).toFloat()
+        val sent = block.samples.copyOf()
+        meter.process(block)
+        assertTrue(sent.contentEquals(block.samples), "every sample passes as it came")
         // A sine at half scale has an RMS of 0.5/√2.
         assertTrue(abs(meter.levelAt(5_050) - 0.3536f) < 0.01f)
         assertEquals(-1f, meter.levelAt(4_000))
         listening.close()
         // A seek starts the record afresh.
-        meter.flush(AudioProcessor.StreamMetadata(60_000_000))
+        meter.onStreamStart(60_000_000)
         assertEquals(-1f, meter.levelAt(5_050))
     }
 }

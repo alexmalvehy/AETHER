@@ -94,10 +94,15 @@ fun TrackRow(
             Spacer(Modifier.width(14.dp))
         }
         Column(Modifier.weight(1f)) {
-            Txt(track.title, Type.TitleSmall, color = if (track.available) Ink.White else Ink.Faint, maxLines = 1)
+            MarkedLine(
+                track.title,
+                track.explicit,
+                Type.TitleSmall,
+                color = if (track.available) Ink.White else Ink.Faint,
+                markColor = if (!track.available) Ink.Faint else if (playing) Ink.White.copy(alpha = 0.8f) else Ink.Grey,
+            )
             val second = buildList {
                 if (track.kind == MediaKind.MUSIC_VIDEO || track.kind == MediaKind.VIDEO) add("Video")
-                if (track.explicit) add("E")
                 if (track.artists.isNotEmpty()) add(track.artistLine)
                 track.plays?.let { add(it) }
             }.joinToString("  ·  ")
@@ -160,7 +165,8 @@ fun TrackCard(track: Track, onClick: () -> Unit, modifier: Modifier = Modifier, 
         )
         Spacer(Modifier.height(10.dp))
         Txt(track.title, Type.TitleSmall, maxLines = 2, align = TextAlign.Center)
-        Txt(track.artistLine, Type.Meta, color = Ink.Grey, maxLines = 1, align = TextAlign.Center)
+        // The mark heads the line under the title: a centred title over two lines has no one start.
+        MarkedLine(track.artistLine, track.explicit, Type.Meta, color = Ink.Grey, maxLines = 1, align = TextAlign.Center)
     }
 }
 

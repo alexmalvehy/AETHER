@@ -46,7 +46,6 @@ class NotificationActionHandler(
         MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
             .add(COMMAND_TOGGLE_LIKE)
             .add(COMMAND_START_RADIO)
-            .add(SessionCommand(CastManager.ACTION_OPEN_OUTPUT_SWITCHER, Bundle.EMPTY))
             .build()
 
     fun refreshCustomLayout() {
@@ -78,7 +77,7 @@ class NotificationActionHandler(
                 val track = player?.currentMediaItem?.toTrack()
                     ?: return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE))
                 scope.launch(Dispatchers.Main) {
-                    val radioTracks = runCatching { env.startRadio(track) }.getOrDefault(emptyList())
+                    val radioTracks = runCatching { env.suggestionsAfter(track) }.getOrDefault(emptyList())
                         .filterNot { it.id == track.id }
                     if (radioTracks.isNotEmpty() && player.mediaItemCount > 0) {
                         val currentIndex = player.currentMediaItemIndex

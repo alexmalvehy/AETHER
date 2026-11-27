@@ -27,8 +27,12 @@ android {
         minSdk = 29
         targetSdk = 36
         // major * 1,000,000 + minor * 1,000 + patch, so it only ever rises.
-        versionCode = 2_003_000
-        versionName = "2.3.0"
+        versionCode = 3_001_000
+        versionName = "3.1.0"
+        // The TV's receiver: AETHER's own (site/cast/, once registered with Google Cast and its id
+        // given here as -Paether.castReceiverId=XXXXXXXX or in gradle.properties), or Google's standard
+        // one, which plays the music on its own plain screen. docs/cast.md says how.
+        resValue("string", "aether_cast_receiver", providers.gradleProperty("aether.castReceiverId").orNull ?: "CC1AD845")
     }
     signingConfigs {
         if (releaseStore != null) {
@@ -61,7 +65,23 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        resValues = true
+    }
+    packaging {
+        jniLibs {
+            // ONNX Runtime (Automix's beat and voice models) is 35 MB for each x86 type, which only
+            // emulators and a few Chromebooks are: there, Automix measures without its models (its
+            // own beat and voice estimates), and every phone keeps the models.
+            excludes += setOf(
+                "lib/x86/libonnxruntime.so",
+                "lib/x86/libonnxruntime4j_jni.so",
+                "lib/x86_64/libonnxruntime.so",
+                "lib/x86_64/libonnxruntime4j_jni.so",
+            )
+        }
+    }
 }
 
 tasks.withType<KotlinCompile>().configureEach {
@@ -72,11 +92,13 @@ dependencies {
     implementation(project(":core:designsystem"))
     implementation(project(":core:data"))
     implementation(project(":core:lyrics"))
+    implementation(project(":core:transfer"))
     implementation(project(":player"))
     implementation(project(":sources:youtube"))
     implementation(project(":sources:local"))
     implementation(project(":sources:addon"))
     implementation(project(":sources:apple"))
+    implementation(project(":sources:canvas"))
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
@@ -93,9 +115,6 @@ dependencies {
     implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.datasource)
     implementation(libs.media3.database)
-    implementation("androidx.media3:media3-cast:1.11.1")
-    implementation("com.google.android.gms:play-services-cast-framework:21.4.0")
-    implementation("androidx.mediarouter:mediarouter:1.7.0")
     implementation(libs.coil.network.okhttp)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
@@ -106,4 +125,5 @@ dependencies {
     // Verse's line model and the offline albums (./gradlew :app:testDebugUnitTest).
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

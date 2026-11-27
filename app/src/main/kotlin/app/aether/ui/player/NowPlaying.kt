@@ -2,6 +2,11 @@
 
 package app.aether.ui.player
 
+import app.aether.player.cast.CastController
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.runtime.DisposableEffect
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
 import app.aether.core.designsystem.component.Pull
 import android.os.Build
@@ -43,8 +48,11 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
+import app.aether.core.designsystem.art.SoftArt
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
@@ -81,6 +89,7 @@ import app.aether.core.designsystem.theme.Motion
 import app.aether.core.designsystem.theme.Sans
 import app.aether.core.designsystem.theme.Space
 import app.aether.core.designsystem.theme.Type
+import app.aether.core.designsystem.theme.retained
 import app.aether.core.model.songCount
 import app.aether.core.model.HeardFormat
 import app.aether.core.model.Lyrics
@@ -119,11 +128,16 @@ import app.aether.core.designsystem.component.Icon
 import app.aether.core.designsystem.glass.liquidTouch
 import app.aether.core.designsystem.glass.rememberLiquidState
 import app.aether.core.designsystem.glass.translucent
-import app.aether.core.designsystem.art.SoftArt
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.runtime.State
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -174,22 +188,40 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
  * the lower half. It follows the finger: pull it down to leave, pull the capsule up for what's next.
  */
 @Composable
-fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> Unit)? = null) {
+fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> Unit)? = null, window: PlayerWindow? = null) {
     val container = LocalContainer.current
     val actions = LocalActions.current
     val haptics = LocalHaptics.current
     val state by container.playback.state.collectAsStateWithLifecycle()
     val track = state.current ?: return
+    // Now Playing stays made while it's closed: building it was most of its first frame (~55 ms), and
+    // letting it all go most of its last (~50 ms). What moves by itself in it rests while it's closed,
+    // and what it fetches (a film, a video, the words) waits until it's been opened, as before.
+    val shown by remember { derivedStateOf { player.visible } }
+    // Closed, the dial holds where it was: the song's place moves four times a second, and Now Playing
+    // stays in the picture while it's closed, so a dial following it would be drawn again unseen.
+    val position = container.playback.position.collectAsStateWithLifecycle()
+    val dialPosition = remember(position) { HeldWhile(position) { player.visible } }
     val treatmentIndex by container.settings.artwork.collectAsStateWithLifecycle()
     val treatment = ArtTreatment.Cycle[treatmentIndex.mod(ArtTreatment.Cycle.size)]
+    // The words laid across the cover (its tattoo): the listener can have the cover alone.
+    val coverWords by container.settings.coverWords.collectAsStateWithLifecycle()
+    // The cover's light behind it, or black with the cover's faint glow, as it was.
+    val coverLight by container.settings.coverLight.collectAsStateWithLifecycle()
     val queueSheet = rememberDragState()
+    // Where the music plays: this phone, or a TV on its Wi-Fi (the cast key, beside the video's).
+    val castSheet = rememberDragState()
+    val cast by CastController.state.collectAsStateWithLifecycle()
     val lyricsPane = rememberDragState(give = Pull.Give, flick = Pull.Flick)
     val songVideo by container.settings.songVideo.collectAsStateWithLifecycle()
     val films = remember { mutableStateListOf(FilmSlot(track)) }
     // One key, kept: on, a song has its cover and then the cover's film, and a music video plays as
     // itself (its cover's film only if the video can't be had); off, just the cover.
     val videos = remember { mutableStateListOf(VideoSlot(track)) }
-    LaunchedEffect(track.id) {
+    val morph = remember { CoverMorphState() }
+    LaunchedEffect(track.id, morph.carrying) {
+        // A change of song under Automix's dots: its film comes once they've landed.
+        if (morph.carrying) return@LaunchedEffect
         if (films.lastOrNull()?.track?.id != track.id) {
             films.lastOrNull()?.leaving = true
             films += FilmSlot(track)
@@ -202,8 +234,23 @@ fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> 
     val artAllowed by container.settings.artistArt.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val liked by container.library.isLiked(track.id).collectAsStateWithLifecycle(false)
-    val lyrics = rememberLyrics(track)
+    // A video plays without lyrics: its sound runs to its own clock (an intro, a scene, a longer cut),
+    // so words timed to the song drift from it, and a video's title finds other songs' words. Nothing
+    // is asked for one; the key says so, and the words close if one comes on.
+    val playingVideo = track.isVideo
+    val lyrics = rememberLyrics(track, fetch = shown && !playingVideo)
+    LaunchedEffect(playingVideo) { if (playingVideo && lyricsPane.visible) lyricsPane.hide() }
+    // Closed, it comes back as it always has: no words and no Up next left open under it.
+    LaunchedEffect(shown) {
+        if (!shown) {
+            lyricsPane.dismiss()
+            queueSheet.dismiss()
+            castSheet.dismiss()
+        }
+    }
     val insets = WindowInsets.systemBarsIgnoringVisibility.asPaddingValues()
+    // Automix: where it will mix (on the dial), and its change of song (on the cover).
+    val automixWindow = container.playback.automixWindow.collectAsStateWithLifecycle()
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val top = insets.calculateTopPadding()
@@ -211,7 +258,10 @@ fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> 
         val stage = remember(maxWidth, maxHeight, top, bottom) { Stage(maxWidth, maxHeight, top, bottom) }
         val screen = with(LocalDensity.current) { maxHeight.toPx() }
         SideEffect { lyricsPane.travelPx = screen }
-        val lyricsScroll = rememberSheetScroll(lyricsPane)
+        // While the words' page follows the song, a pull down anywhere on it takes the lyrics away;
+        // once it's been turned by hand, the page is read back first.
+        val lyricsFollowing = remember { mutableStateOf(true) }
+        val lyricsScroll = rememberSheetScroll(lyricsPane, pullsFirst = { lyricsFollowing.value })
         BackHandler(enabled = lyricsPane.visible) { lyricsPane.hide() }
         // Under a sheet or the lyrics, the print stops its grain (it's hidden, and every grain frame
         // would have every piece of glass over it drawn again); under the lyrics, which cover the
@@ -220,16 +270,60 @@ fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> 
         val lyricsUp by remember { derivedStateOf { lyricsPane.value >= 0.999f } }
         // While it's being pulled too: the print's grain would have all its glass drawn again under the finger.
         val moving by remember { derivedStateOf { player.value < 0.999f } }
-        val still = queueSheet.visible || lyricsPane.visible || menu != null || scrubbing || moving
+        val still = queueSheet.visible || castSheet.visible || lyricsPane.visible || menu != null || scrubbing || moving
         val hidden = { lyricsPane.value >= 0.999f && !lyricsPane.holding }
+        // Growing out of the mini player ([window]): the window opens and shows what's in it, everything
+        // standing where it stands at rest ([Growth]). Read while drawing, so nothing is composed again.
+        val grown: (part: (Float) -> Float) -> Float = { part -> if (window == null) 1f else part(player.value) }
+        val density = LocalDensity.current
+        val printDrawing = rememberGraphicsLayer()
+        val printFlying = { window != null && abs(player.value - 1f) > 0.0005f }
+        // The cover as itself is square and whole; a print is 4:5.
+        val printSpot = if (treatment == ArtTreatment.Original) stage.cover else stage.print
         GlassHost(
             Modifier.fillMaxSize(),
+            // Its own black is drawn below (it fades in as the window grows): the plane itself is clear.
+            ground = Color.Transparent,
             hideContent = hidden,
             content = {
-                // The cover's light, far behind everything. A few dozen
-                // pixels of the cover, blurred once and cached, stretched over the screen.
-                SoftArt(track.artwork, Modifier.fillMaxSize().alpha(0.34f), px = 32)
-                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Black.copy(alpha = 0.2f), 0.5f to Color.Black.copy(alpha = 0.6f), 1f to Color.Black)))
+                Box(Modifier.fillMaxSize().graphicsLayer { alpha = grown(Growth::ground) }.background(Color.Black))
+                // The cover's light, far behind everything: BitChord's mesh of its colours (Apple Music's
+                // backdrop) across the top, orbiting while the song plays, going out round the dial in the
+                // film's own rings.
+                // A song's film is the cover's light itself, in the same rings: the light gives way to it as
+                // it comes up, and isn't drawn at all under one that's fully up.
+                val filmCover = {
+                    if (treatment != ArtTreatment.Original) 0f else {
+                        val videoUp = (videos.maxOfOrNull { it.up.value } ?: 0f).coerceIn(0f, 1f)
+                        val filmUp = films.maxOfOrNull { film ->
+                            val video = videos.lastOrNull { it.track.id == film.track.id }
+                            if (!film.track.isVideo || video?.failed == true) film.up.value else 0f
+                        } ?: 0f
+                        (filmUp * (1f - videoUp) * morph.veil.floatValue * grown(Growth::film)).coerceIn(0f, 1f)
+                    }
+                }
+                if (coverLight) AmbientLight(
+                    track.artwork,
+                    fade = stage.filmFade,
+                    frame = stage.filmFoot,
+                    upcoming = state.queue.getOrNull(state.index + 1)?.artwork,
+                    running = shown && state.isPlaying && !still && !lyricsUp,
+                    // Under a music video the video is the motion: the light holds still, and the screen is
+                    // drawn only as the video's frames come (measured: the video at its full rate, the
+                    // light costing what no light would).
+                    rests = { filmCover() >= 0.999f || videos.any { it.up.value > 0.002f } },
+                    modifier = Modifier.fillMaxSize().graphicsLayer { alpha = grown(Growth::ground) * (1f - filmCover()) },
+                ) else {
+                    // Black, as it was: a few dozen pixels of the cover, blurred once and cached, stretched
+                    // over the screen, and gone to black down it.
+                    SoftArt(track.artwork, Modifier.fillMaxSize().graphicsLayer { alpha = 0.34f * grown(Growth::ground) }, px = 32)
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { alpha = grown(Growth::ground) }
+                            .background(Brush.verticalGradient(0f to Color.Black.copy(alpha = 0.2f), 0.5f to Color.Black.copy(alpha = 0.6f), 1f to Color.Black)),
+                    )
+                }
                 // The cover as it is can move; a print of it stays a print. A music video plays as
                 // itself instead, and only gives way to its film if it can't play.
                 if (treatment == ArtTreatment.Original) films.toList().forEach { film ->
@@ -237,10 +331,11 @@ fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> 
                     if (!film.track.isVideo || video?.failed == true) key(film) {
                         SongFilm(
                             film,
-                            playing = state.isPlaying && !still && !lyricsUp,
+                            playing = state.isPlaying && !still && !lyricsUp && !morph.carrying,
+                            ready = shown,
                             onGone = { films.remove(film) },
                             fade = stage.filmFade,
-                            modifier = Modifier.fillMaxWidth().height(stage.filmFoot).graphicsLayer { alpha = 1f - (videos.maxOfOrNull { it.up.value } ?: 0f).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(stage.filmFoot).graphicsLayer { alpha = (1f - (videos.maxOfOrNull { it.up.value } ?: 0f).coerceIn(0f, 1f)) * morph.veil.floatValue * grown(Growth::film) },
                         )
                     }
                 }
@@ -249,40 +344,80 @@ fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> 
                     key(slot) {
                         MusicVideo(
                             slot,
-                            playing = state.isPlaying && !lyricsUp && !queueSheet.visible,
+                            playing = state.isPlaying && !lyricsUp && !queueSheet.visible && shown,
+                            allowed = shown,
                             onGone = { videos.remove(slot) },
                             onFailed = { actions.keep.note("This video won't play here, so its cover stays") },
-                            modifier = Modifier.at(stage.screen),
+                            modifier = Modifier.at(stage.screen).graphicsLayer { alpha = grown(Growth::film) },
                         )
                     }
                 }
-                Column(Modifier.at(stage.heading), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Top) {
+                Column(
+                    Modifier.at(stage.heading).bloom(window, player),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Top,
+                ) {
                     Txt("Now playing", Type.Label, upper = true, modifier = Modifier.padding(top = 18.dp))
-                    if (state.queue.size > 1) Txt("${state.index + 1} of ${state.queue.size}", Type.Meta, color = Ink.Grey)
+                    // On a TV, where it's playing says more than its place in the queue.
+                    val on = cast.connectedName
+                    if (on != null) Txt("On $on", Type.Meta, color = Ink.Grey, maxLines = 1)
+                    else if (state.queue.size > 1) Txt("${state.index + 1} of ${state.queue.size}", Type.Meta, color = Ink.Grey)
                 }
                 Print(
                     track = track,
                     grain = !still,
                     filmUp = {
                         val film = if (treatment == ArtTreatment.Original) films.filter { f -> !f.track.isVideo || videos.any { it.track.id == f.track.id && it.failed } }.maxOfOrNull { it.up.value } ?: 0f else 0f
-                        maxOf(film, videos.maxOfOrNull { it.up.value } ?: 0f)
+                        val up = maxOf(film, videos.maxOfOrNull { it.up.value } ?: 0f)
+                        // In flight the print is itself, whatever plays over it at rest: it gives way to the song's
+                        // film or video over the last of the way in, as they come up ([Growth.film]), and comes
+                        // back from under them over the first of the way out.
+                        if (window != null) up * Growth.film(player.value) else up
                     },
                     index = state.index,
                     treatment = treatment,
-                    microtype = microtype(track, state, lyrics),
+                    microtype = if (coverWords) microtype(track, state, lyrics) else emptyList(),
                     onSwipe = { dir -> haptics.strong(); if (dir > 0) actions.playback.previous() else actions.playback.next() },
-                    modifier = Modifier.at(stage.print).onPlaced { actions.keep.cover = it },
+                    veil = { morph.veil.floatValue },
+                    instant = { morph.carrying },
+                    modifier = Modifier
+                        .at(printSpot)
+                        .onPlaced { actions.keep.cover = it }
+                        // Its drawing is kept: while the window grows or shrinks it's drawn flying, over
+                        // everything else, and here only at rest. The same drawing both ways, so it lands as itself.
+                        .then(if (window != null) Modifier.drawWithContent {
+                            printDrawing.record { this@drawWithContent.drawContent() }
+                            if (!printFlying()) drawLayer(printDrawing)
+                        }.graphicsLayer {
+                            // In flight it's one texture, drawn once at its own size and then only moved:
+                            // drawn at a new size every frame, its shader, its picture and its words were
+                            // all made again each frame (a print-sized upload, frames of 30-45 ms on the GPU).
+                            compositingStrategy = if (printFlying()) CompositingStrategy.Offscreen else CompositingStrategy.Auto
+                        } else Modifier),
+                )
+                // Only while Now Playing is up: its dots are made ahead and follow the music frame by frame.
+                if (shown) CoverMorph(
+                    blends = container.playback.automixBlend,
+                    planned = container.playback.automixPlanned,
+                    queue = state.queue,
+                    currentId = track.id.value,
+                    treatment = treatment,
+                    state = morph,
+                    modifier = Modifier.at(printSpot).graphicsLayer { alpha = grown(Growth::landed) },
                 )
                 Song(
                     track = track,
                     state = state,
+                    moving = shown,
                     onArtist = { track.artists.firstOrNull { it.id != null }?.id?.let { actions.go(Route.Artist(it)) } },
                     onAlbum = { track.album?.id?.let { actions.go(Route.Album(it)) } },
-                    modifier = Modifier.at(stage.song),
+                    modifier = Modifier.at(stage.song).bloom(window, player),
                 )
             },
             overlay = {
               Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (hidden()) 0f else 1f }) {
+               // Its top, where it stands: it comes in once the island has room for it.
+               Box(Modifier.fillMaxSize().bloom(window, player)) {
                 // The grabber: Now Playing is pulled down to go, or touched here.
                 Grabber(player, Modifier.at(stage.grabber), touchHeight = stage.grabber.h)
                 // It takes the place of the room's back key, whose arrow turned to point down as this
@@ -294,46 +429,49 @@ fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> 
                     Glyph.Down,
                     "Close",
                     onClose,
-                    Modifier.at(stage.close).graphicsLayer { alpha = ((player.value - 0.86f) / 0.14f).coerceIn(0f, 1f) },
-                    backdrop = null,
-                )
-                val context = LocalContext.current
-                val isCasting by container.cast.isCasting.collectAsStateWithLifecycle()
-                GlassCircle(
-                    Glyph.Cast,
-                    if (isCasting) "Casting" else "Cast",
-                    {
-                        haptics.tick()
-                        app.aether.player.CastManager.openOutputSwitcher(context)
-                    },
-                    Modifier.at(stage.cast).graphicsLayer { alpha = ((player.value - 0.86f) / 0.14f).coerceIn(0f, 1f) },
-                    lit = isCasting,
+                    Modifier.at(stage.close).graphicsLayer { if (window == null) alpha = ((player.value - 0.86f) / 0.14f).coerceIn(0f, 1f) },
                     backdrop = null,
                 )
                 // One key for the moving picture, kept: a song's film, or a music video itself.
                 run {
-                    // A music video needs nothing else; a song's film needs the art from Apple's pages.
-                    val lit = songVideo && (track.isVideo || artAllowed)
+                    // A music video needs nothing else, nor does a cover from the community's index; Apple's
+                    // films need the art from Apple's pages, and are said to when it's off.
                     GlassCircle(
                         Glyph.Video,
-                        if (lit) "Video on" else "Video off",
+                        if (songVideo) "Video on" else "Video off",
                         {
                             haptics.tick()
-                            if (!songVideo && !track.isVideo && !artAllowed) actions.keep.note("Turn on Artist and album art in Settings")
-                            else container.settings.setSongVideo(!songVideo)
+                            container.settings.setSongVideo(!songVideo)
+                            if (!songVideo && !track.isVideo && !artAllowed) actions.keep.note("Apple Music's films need Artist and album art in Settings")
                         },
-                        Modifier.at(stage.film).graphicsLayer { alpha = ((player.value - 0.86f) / 0.14f).coerceIn(0f, 1f) },
-                        lit = lit,
+                        Modifier.at(stage.film).graphicsLayer { if (window == null) alpha = ((player.value - 0.86f) / 0.14f).coerceIn(0f, 1f) },
+                        lit = songVideo,
                         backdrop = null,
                     )
                 }
+                // Cast: beside the video's key, lit while a TV plays (where Google Cast is on this phone at all).
+                if (cast.supported) GlassCircle(
+                    Glyph.Cast,
+                    cast.connectedName?.let { "Playing on $it" } ?: "Play on a TV",
+                    {
+                        haptics.tick()
+                        castSheet.show()
+                    },
+                    Modifier.at(stage.cast).graphicsLayer { if (window == null) alpha = ((player.value - 0.86f) / 0.14f).coerceIn(0f, 1f) },
+                    lit = cast.casting,
+                    backdrop = null,
+                )
+               }
+               // Its foot (the dial, the ring and the keys either side), where it stands, the same way.
+               Box(Modifier.fillMaxSize().bloom(window, player)) {
                 ClockDial(
-                    position = container.playback.position.collectAsStateWithLifecycle(),
+                    position = dialPosition,
                     durationMs = state.durationMs,
                     playing = state.isPlaying,
                     onSeek = { actions.playback.seekTo(it) },
                     onScrubbing = { scrubbing = it },
-                    running = !lyricsUp,
+                    running = !lyricsUp && shown,
+                    window = { automixWindow.value?.let { it.start to it.end } },
                     modifier = Modifier.at(stage.dial),
                 )
                 // Over the dial, so its keys always take the touch where the two meet.
@@ -341,16 +479,26 @@ fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> 
                     stage = stage,
                     state = state,
                     liked = liked,
-                    hasLyrics = lyrics is Load.Ready && lyrics.value != null,
+                    hasLyrics = !playingVideo && lyrics is Load.Ready && lyrics.value != null,
                     onLike = { scope.launch { container.library.setLiked(track, !liked) } },
-                    onLyrics = { lyricsPane.show() },
+                    onLyrics = { if (playingVideo) actions.keep.note("Videos play without lyrics") else lyricsPane.show() },
                     onQueue = { queueSheet.show() },
                     onMore = { actions.openMenu(track) },
                     pullUp = Modifier.dragsOpen(queueSheet),
                 )
                 GlassCircle(Glyph.Previous, "Previous", { haptics.strong(); actions.playback.previous() }, Modifier.at(stage.previous), size = stage.key, iconSize = 19.dp, backdrop = null)
                 GlassCircle(Glyph.Next, "Next", { haptics.strong(); actions.playback.next() }, Modifier.at(stage.next), size = stage.key, iconSize = 19.dp, backdrop = null)
+               }
+               if (window != null) {
+                   val place = with(density) { Rect(printSpot.x.toPx(), printSpot.y.toPx(), (printSpot.x + printSpot.w).toPx(), (printSpot.y + printSpot.h).toPx()) }
+                   val corner = with(density) { PrintCorner.toPx() }
+                   // The print in flight, over everything it passes (the song's lines, the ring), as the
+                   // flying thing always is; then the pill's own cover over it, for the first moment.
+                   FlyingPrint(window, printDrawing, place, corner, Modifier.fillMaxSize())
+                   PillCover(track, window, print = place, corner = corner, modifier = Modifier.fillMaxSize())
+               }
                 DragSheet(queueSheet) { QueueSheet(state) }
+                DragSheet(castSheet, height = 460.dp) { CastPicker(castSheet) }
                 menu?.invoke()
               }
                 // The words, full screen over everything; they follow the finger down to go.
@@ -361,7 +509,7 @@ fun NowPlaying(player: DragState, onClose: () -> Unit, menu: (@Composable () -> 
                             .graphicsLayer { translationY = (1f - lyricsPane.value.coerceIn(0f, 1f)) * screen }
                             .nestedScroll(lyricsScroll)
                             .dragsOpen(lyricsPane),
-                    ) { LyricsStage(track, lyricsPane) }
+                    ) { LyricsStage(track, lyricsPane, lyricsFollowing) }
                 }
             },
         )
@@ -381,9 +529,13 @@ private fun Modifier.at(spot: Spot): Modifier = this.offset(spot.x, spot.y).size
 private class Stage(w: Dp, h: Dp, top: Dp, bottom: Dp) {
     private val edge = Space.edge
     val close = Spot(edge, top + 6.dp, 44.dp, 44.dp)
-    val cast = Spot(w - edge - 44.dp - 8.dp - 44.dp, top + 6.dp, 44.dp, 44.dp)
     val film = Spot(w - edge - 44.dp, top + 6.dp, 44.dp, 44.dp)
-    val heading = Spot(edge + 56.dp, top + 2.dp, w - (edge + 56.dp) * 2, 52.dp)
+
+    /** The cast key, beside the video's. */
+    val cast = Spot(w - edge - 44.dp - 10.dp - 44.dp, top + 6.dp, 44.dp, 44.dp)
+
+    /** Centred between the keys either side: as far in on the left as the two keys reach on the right. */
+    val heading = Spot(edge + 108.dp, top + 2.dp, w - (edge + 108.dp) * 2, 52.dp)
     val grabber = Spot(w / 2 - 36.dp, top + 2.dp, 72.dp, 16.dp)
     private val radius = minOf((w - edge * 2) / 2, h * 0.2f)
     val dial = Spot(w / 2 - radius - 14.dp, h - bottom - radius - 20.dp, (radius + 14.dp) * 2, radius + 20.dp)
@@ -414,6 +566,12 @@ private class Stage(w: Dp, h: Dp, top: Dp, bottom: Dp) {
     /** Where a video plays: the screen's full width across the print's place, the picture fitted inside it. */
     val screen: Spot
 
+    /**
+     * The cover shown as itself ([ArtTreatment.Original]): square, the whole of it, as wide as the print and
+     * where the print's middle is. Only the prints (mono, halftone, letters, dots) are cut to 4:5.
+     */
+    val cover: Spot
+
     init {
         val areaTop = close.y + close.h + 16.dp
         val areaH = (song.y - 8.dp - areaTop).coerceAtLeast(120.dp)
@@ -421,6 +579,7 @@ private class Stage(w: Dp, h: Dp, top: Dp, bottom: Dp) {
         val ph = pw * 1.25f
         print = Spot((w - pw) / 2, areaTop + (areaH - ph) / 2, pw, ph)
         screen = Spot(0.dp, print.y, w, ph)
+        cover = Spot(print.x, print.y + (ph - pw) / 2, pw, pw)
     }
 }
 
@@ -431,24 +590,25 @@ private class Stage(w: Dp, h: Dp, top: Dp, bottom: Dp) {
  * decoder measured. A line too long for the screen drifts slowly sideways, fading at its edges.
  */
 @Composable
-private fun Song(track: Track, state: PlaybackState, onArtist: () -> Unit, onAlbum: () -> Unit, modifier: Modifier) {
+private fun Song(track: Track, state: PlaybackState, moving: Boolean, onArtist: () -> Unit, onAlbum: () -> Unit, modifier: Modifier) {
     val (name, aside) = remember(track.title) { splitTitle(track.title) }
     // Playing from one of the listener's own sources, an exact copy: said beside what the decoder measured.
     val served by LocalContainer.current.sources.served.collectAsStateWithLifecycle()
     val from = served[track.id]?.takeIf { it.isNotBlank() }
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Drift(Modifier.then(if (track.album?.id != null) Modifier.quietClick(onAlbum) else Modifier)) {
-            Txt(name, SongTitle, maxLines = 1)
+        Drift(Modifier.then(if (track.album?.id != null) Modifier.quietClick(onAlbum) else Modifier), moving) {
+            app.aether.core.designsystem.component.MarkedLine(name, track.explicit, SongTitle)
         }
         if (aside != null) {
             Spacer(Modifier.height(2.dp))
-            Drift { Txt(aside, Type.Meta, color = Ink.Grey, maxLines = 1) }
+            Drift(moving = moving) { Txt(aside, Type.Meta, color = Ink.Grey, maxLines = 1) }
         }
         Spacer(Modifier.height(5.dp))
-        Drift(Modifier.quietClick(onArtist)) { Txt(track.artistLine, Type.Body, color = Ink.Grey, maxLines = 1) }
+        Drift(Modifier.quietClick(onArtist), moving) { Txt(track.artistLine, Type.Body, color = Ink.Grey, maxLines = 1) }
         Spacer(Modifier.height(7.dp))
         when (state.status) {
-            PlaybackStatus.LOADING, PlaybackStatus.BUFFERING -> GridDots(size = 12.dp, grid = 3)
+            // The loader's dots only while they can be seen: closed, it would draw for no one.
+            PlaybackStatus.LOADING, PlaybackStatus.BUFFERING -> if (moving) GridDots(size = 12.dp, grid = 3) else Spacer(Modifier.size(12.dp))
             PlaybackStatus.ERROR -> Txt(state.error ?: "Couldn't play", Type.Meta, color = Ink.Grey, align = TextAlign.Center, maxLines = 1)
             else -> {
                 val measured = quality(state.heard)
@@ -488,11 +648,12 @@ internal fun splitTitle(title: String): Pair<String, String?> {
 
 /**
  * One line that drifts sideways when it's too long to show, slowly, pausing at the start, and
- * fades at the edges as it goes; a line that fits sits still and centred. Still with reduced motion.
+ * fades at the edges as it goes; a line that fits sits still and centred. Still with reduced motion,
+ * and while Now Playing is closed ([moving] false): a marquee asks for every frame.
  */
 @Composable
-private fun Drift(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    val reduce = LocalReduceMotion.current
+private fun Drift(modifier: Modifier = Modifier, moving: Boolean = true, content: @Composable () -> Unit) {
+    val reduce = LocalReduceMotion.current || !moving
     Box(
         modifier
             .fillMaxWidth()
@@ -562,7 +723,8 @@ private fun RingControls(
     // Angles are measured from the right, upward, as on a dial; key i is centred at this one.
     fun angleOf(i: Int) = PI.toFloat() - reach - (i + 0.5f) * slot
     Box(Modifier.at(stage.ring)) {
-        Canvas(Modifier.fillMaxSize()) {
+        // The housing never moves: a picture of itself, kept.
+        Canvas(Modifier.fillMaxSize().retained()) {
             val c = Offset(size.width / 2f, size.height)
             val ri = stage.ringInner.toPx()
             val ro = stage.ringOuter.toPx()
@@ -629,8 +791,11 @@ private fun RingControls(
     }
 }
 
-/** The format the decoder measured, never what a source claimed. Nothing when unknown. */
-private fun quality(heard: HeardFormat?): String? {
+/**
+ * The format the decoder measured, never what a source claimed, as Now Playing says it (and a TV
+ * showing AETHER, which is sent the same words). Nothing when unknown.
+ */
+internal fun quality(heard: HeardFormat?): String? {
     heard ?: return null
     val parts = buildList {
         heard.codec?.let { add(it.replace("MP4A-LATM", "AAC").replace("MP4A", "AAC")) }
@@ -655,6 +820,108 @@ private class PrintSheet(val track: Track, arriving: Boolean, val fromAbove: Boo
 /** How long a next print is waited for before the wipe starts without it (ms). */
 private const val PrintWaitMs = 1800L
 
+/** The print's corners (Corners.Medium's radius), where the pill's cover lands. */
+private val PrintCorner = 16.dp
+
+/**
+ * A part of Now Playing coming into the island as it grows ([Growth.bloom]): fading up from a little
+ * smaller than it stands, about its own middle, once there's room for it. At rest, as it is.
+ */
+private fun Modifier.bloom(window: PlayerWindow?, player: DragState): Modifier =
+    if (window == null) this else graphicsLayer {
+        val p = player.value
+        if (p >= 0.9995f && p <= 1.0005f) return@graphicsLayer
+        alpha = Growth.bloom(p)
+        val k = Growth.bloomScale(p)
+        scaleX = k
+        scaleY = k
+        compositingStrategy = CompositingStrategy.ModulateAlpha
+    }
+
+/** [live]'s value while [on] says so; otherwise the last value read, without asking [live] (so nothing follows it). */
+private class HeldWhile<T>(private val live: State<T>, private val on: () -> Boolean) : State<T> {
+    private var last = live.value
+    override val value: T get() = if (on()) live.value.also { last = it } else last
+}
+
+/**
+ * The print flying between the pill's cover and its place as the window grows and shrinks
+ * ([PrintFlight]): its own drawing ([drawing], kept where it stands), scaled and moved, and cut to the
+ * shape it has on the way, the pill's circle at one end and its own corners at the other. Drawn over
+ * everything it passes; at rest it's drawn where it stands instead, and this draws nothing.
+ */
+@Composable
+private fun FlyingPrint(window: PlayerWindow, drawing: GraphicsLayer, place: Rect, corner: Float, modifier: Modifier) {
+    val path = remember { Path() }
+    Spacer(
+        modifier.drawBehind {
+            val f = window.frame() ?: return@drawBehind
+            if (abs(f.p - 1f) <= 0.0005f) return@drawBehind
+            val art = f.art ?: return@drawBehind
+            val flight = PrintFlight.at(art, place, f.p, corner)
+            path.reset()
+            path.addRoundRect(androidx.compose.ui.geometry.RoundRect(flight.clip, androidx.compose.ui.geometry.CornerRadius(flight.radius)))
+            translate(place.left + flight.dx, place.top + flight.dy) {
+                scale(flight.scale, flight.scale, pivot = Offset(place.width / 2f, place.height / 2f)) {
+                    clipPath(path) { drawLayer(drawing) }
+                }
+            }
+        },
+    )
+}
+
+/**
+ * The pill's own cover, over the print as the print leaves the pill and as it comes back into it
+ * ([Growth.pillCover]): the same picture the pill shows, whole, in the same circle, at the place the
+ * print is flying from (read where it is, every frame). It gives way to the print in the first moment,
+ * while both are small and moving, so a print in mono, halftone or dither takes over where it can't be
+ * told apart, and never at the end, where the print lands as itself.
+ */
+@Composable
+private fun PillCover(track: Track, window: PlayerWindow, print: Rect, corner: Float, modifier: Modifier) {
+    val large = app.aether.core.designsystem.art.rememberPicture(track.artwork.url(PrintPx), PrintPx)
+    val small = app.aether.core.designsystem.art.rememberPicture(track.artwork.url(PillCoverPx), PillCoverPx)
+    val path = remember { Path() }
+    Spacer(
+        modifier.drawBehind {
+            val f = window.frame() ?: return@drawBehind
+            if (f.p >= 0.9995f) return@drawBehind
+            val alpha = Growth.pillCover(f.p)
+            if (alpha <= 0.002f) return@drawBehind
+            val art = f.art ?: return@drawBehind
+            // The pill's own picture first, so the first frames are the pill's cover exactly.
+            val picture = small ?: large ?: return@drawBehind
+            // Past open while the spring settles, it goes a little past the print and comes back: its cushion.
+            val r = app.aether.core.designsystem.motion.Becoming.lerp(art, print, f.p)
+            if (r.width < 1f || r.height < 1f) return@drawBehind
+            val radius = app.aether.core.designsystem.motion.Becoming.lerp(art.height / 2f, corner, f.p.coerceIn(0f, 1f))
+            // The picture's middle, as wide or as tall as this frame's shape needs: the circle's square
+            // crop at the start, the print's 4:5 at the end.
+            val pw = picture.width.toFloat()
+            val ph = picture.height.toFloat()
+            val scale = kotlin.math.max(r.width / pw, r.height / ph)
+            val sw = (r.width / scale).coerceAtMost(pw)
+            val sh = (r.height / scale).coerceAtMost(ph)
+            path.reset()
+            path.addRoundRect(androidx.compose.ui.geometry.RoundRect(r, androidx.compose.ui.geometry.CornerRadius(radius)))
+            clipPath(path) {
+                drawImage(
+                    picture,
+                    srcOffset = IntOffset(((pw - sw) / 2f).roundToInt(), ((ph - sh) / 2f).roundToInt()),
+                    srcSize = androidx.compose.ui.unit.IntSize(sw.roundToInt(), sh.roundToInt()),
+                    dstOffset = IntOffset(r.left.roundToInt(), r.top.roundToInt()),
+                    dstSize = androidx.compose.ui.unit.IntSize(r.width.roundToInt(), r.height.roundToInt()),
+                    alpha = alpha,
+                    filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium,
+                )
+            }
+        },
+    )
+}
+
+/** The mini player's cover is asked for at this size: the same picture in memory as the pill's own. */
+private const val PillCoverPx = 160
+
 /**
  * The print. The next cover rises from below, blown out like paper just out of the bath, and
  * develops into its tones (the Now Playing recording). It starts once its picture is in hand: a wipe
@@ -671,6 +938,10 @@ private fun Print(
     microtype: List<String>,
     onSwipe: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    /** How much of it shows: Automix's dots stand in for it while they carry a change of song. */
+    veil: () -> Float = { 1f },
+    /** A change of song made under Automix's dots: the new cover is simply there. */
+    instant: () -> Boolean = { false },
 ) {
     val reduce = LocalReduceMotion.current
     val context = LocalContext.current
@@ -684,7 +955,7 @@ private fun Print(
         // Going on, the next print rises from below; going back, the earlier one comes down from above.
         val fromAbove = index < lastIndex
         lastIndex = index
-        if (reduce) {
+        if (reduce || instant()) {
             sheets.clear()
             sheets += PrintSheet(track, arriving = false, fromAbove = false)
             return@LaunchedEffect
@@ -714,8 +985,8 @@ private fun Print(
                 val pull = FluidSpring.rubberBand(drag.value, size.width.coerceAtLeast(1f))
                 translationX = pull * 0.6f
                 rotationZ = pull / 600f
-                // It gives way to the song's film, and comes back when that goes.
-                alpha = 1f - filmUp().coerceIn(0f, 1f)
+                // It gives way to the song's film, and comes back when that goes; and to Automix's dots.
+                alpha = (1f - filmUp().coerceIn(0f, 1f)) * veil()
                 clip = true
                 shape = Corners.Medium
             }
@@ -800,11 +1071,11 @@ private fun microtype(track: Track, state: PlaybackState, lyrics: Load<Lyrics?>)
     return head + middle.take(9).let { it + List((9 - it.size).coerceAtLeast(0)) { "" } } + tail
 }
 
-/** The song's words, from its source, kept for the session. Null when it has none. */
+/** The song's words, from its source, kept for the session. Null when it has none. Asked for only when [fetch]. */
 @Composable
-fun rememberLyrics(track: Track): Load<Lyrics?> {
+fun rememberLyrics(track: Track, fetch: Boolean = true): Load<Lyrics?> {
     val container = LocalContainer.current
-    val (load, _) = rememberLoad("lyrics:${track.id}") {
+    val (load, _) = rememberLoad("lyrics:${track.id}", enabled = fetch) {
         val source = container.sources.of(track.id) ?: return@rememberLoad Outcome.Ok(null)
         when (val next = source.upNext(track)) {
             is Outcome.Ok -> next.value.lyrics?.let { source.lyrics(it) } ?: Outcome.Ok(null)
@@ -814,107 +1085,39 @@ fun rememberLyrics(track: Track): Load<Lyrics?> {
     return load
 }
 
+/** A song in Up next as the list holds it: the song, its place in the queue, and a key that stays with it. */
+private class QueueEntry(val track: Track, val index: Int, val key: String)
+
+/**
+ * Up next. Moving a song is BitChord's (its queue, `PlayerQueue.kt`): the song in hand is drawn over the
+ * list where the finger holds it, placed from the finger alone, so nothing the list does underneath (a
+ * swap, a relayout, a scroll) can move it. Its own row stays in the list unseen and trades places with
+ * its neighbours the moment it's carried halfway over one, sent to the queue then and there, and they
+ * slide aside to show where it will be. Held near the list's top or foot, the list scrolls on under it.
+ */
 @Composable
 private fun QueueSheet(state: PlaybackState) {
     val actions = LocalActions.current
     val haptics = LocalHaptics.current
-    val density = LocalDensity.current
-    val scope = rememberCoroutineScope()
+    val container = LocalContainer.current
     val list = rememberLazyListState()
-    val first = state.index
-    val songs = remember(state.queue, first) { state.queue.drop(first.coerceAtLeast(0)) }
-    // A stable name for each queued song (its id, and which repeat of it this is), so a song keeps
-    // its row while it's carried: keyed by position, the row was a new row after one step, and the
-    // drag was lost.
-    val keys = remember(songs) {
+    val first = state.index.coerceAtLeast(0)
+    // A stable name for each queued song (its id, and which repeat of it this is), so a song keeps its
+    // row while it's carried and while the queue moves round it.
+    val entries = remember(state.queue, first) {
         val seen = HashMap<String, Int>()
-        songs.map { t -> val n = seen.merge(t.id.value, 1, Int::plus)!!; "${t.id.value}#$n" }
-    }
-    // The song being carried: where it was (in the queue), how far the finger has taken it, how far
-    // it has lifted out of the list; and, once let go, the move waiting for the queue to take it.
-    var carried by remember { mutableStateOf<String?>(null) }
-    var from by remember { mutableIntStateOf(-1) }
-    val offset = remember { Animatable(0f) }
-    val lift = remember { Animatable(0f) }
-    var landing by remember { mutableStateOf(false) }
-    val rowH = with(density) { 62.dp.toPx() }
-    fun target(): Int = if (from < 0) -1 else (from + kotlin.math.round(offset.value / rowH).toInt()).coerceIn(first + 1, state.queue.lastIndex)
-    var aimed by remember { mutableIntStateOf(-1) }
-
-    // Once the queue has taken the move, the carried song is where it was dropped: it lets go there.
-    LaunchedEffect(keys) {
-        if (landing) {
-            offset.snapTo(0f)
-            carried = null
-            from = -1
-            landing = false
-            lift.animateTo(0f, Motion.snappy())
+        state.queue.drop(first).mapIndexed { i, t ->
+            val n = seen.merge(t.id.value, 1, Int::plus)!!
+            QueueEntry(t, first + i, "${t.id.value}#$n")
         }
     }
-    // Carried near the list's top or foot, the list scrolls on under it.
-    val carrying = carried != null && !landing
-    LaunchedEffect(carrying) {
-        if (!carrying) return@LaunchedEffect
-        val edge = with(density) { 56.dp.toPx() }
-        var then = withFrameNanos { it }
-        while (true) {
-            val now = withFrameNanos { it }
-            val dt = ((now - then) / 1e9f).coerceIn(0f, 0.05f)
-            then = now
-            val info = list.layoutInfo
-            val item = info.visibleItemsInfo.firstOrNull { it.key == carried } ?: continue
-            val top = item.offset + offset.value
-            val bottom = top + item.size
-            val speed = with(density) { 520.dp.toPx() } * dt
-            val push = when {
-                top < edge -> -speed * ((edge - top) / edge).coerceIn(0f, 1f)
-                bottom > info.viewportEndOffset - edge -> speed * ((bottom - (info.viewportEndOffset - edge)) / edge).coerceIn(0f, 1f)
-                else -> 0f
-            }
-            if (push != 0f) {
-                val moved = list.scrollBy(push)
-                offset.snapTo(offset.value + moved)
-            }
-            val t = target()
-            if (t != aimed) { aimed = t; haptics.tick() }
-        }
-    }
-
-    fun pickUp(key: String, index: Int) {
-        if (landing) return
-        carried = key
-        from = index
-        aimed = index
-        haptics.strong()
-        scope.launch { offset.snapTo(0f) }
-        scope.launch { lift.animateTo(1f, Motion.bouncy()) }
-    }
-    fun carry(dy: Float) {
-        if (carried == null || landing) return
-        scope.launch { offset.snapTo(offset.value + dy) }
-        val t = target()
-        if (t != aimed) { aimed = t; haptics.tick() }
-    }
-    fun drop() {
-        if (carried == null || landing) return
-        val to = target()
-        val start = from
-        haptics.light()
-        scope.launch {
-            // It settles into the gap it was aimed at, then the queue moves it there for real.
-            offset.animateTo((to - start) * rowH, Motion.snappy())
-            if (to != start) {
-                landing = true
-                actions.playback.move(start, to)
-                // If the queue doesn't answer, it goes back where it was.
-                kotlinx.coroutines.delay(1200)
-                if (landing) { landing = false; offset.animateTo(0f, Motion.snappy()); carried = null; from = -1; lift.animateTo(0f, Motion.snappy()) }
-            } else {
-                carried = null
-                from = -1
-                lift.animateTo(0f, Motion.snappy())
-            }
-        }
+    // The song Automix is bringing in is already playing: it stays next, and nothing goes in front of it.
+    val mixingIn by container.playback.automixIncoming.collectAsStateWithLifecycle()
+    val heldNext = mixingIn != null && entries.getOrNull(1)?.track?.id?.value == mixingIn
+    val movable = remember(entries, heldNext) { entries.drop(if (heldNext) 2 else 1) }
+    val drag = rememberQueueDrag(list, movable) { from, to ->
+        haptics.tick()
+        actions.playback.move(from, to)
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -928,189 +1131,349 @@ private fun QueueSheet(state: PlaybackState) {
         }
         Box(Modifier.fillMaxSize()) {
             LazyColumn(Modifier.fillMaxSize().padding(horizontal = Space.edge), state = list) {
-                itemsIndexed(songs, key = { i, _ -> keys[i] }) { i, t ->
-                    val index = first + i
-                    val key = keys[i]
-                    val isCarried = key == carried
+                itemsIndexed(entries, key = { _, e -> e.key }) { i, e ->
+                    val isHeld = drag.held?.key == e.key
+                    // Scrolled far enough to be let go of, the row takes its gesture with it: the move ends here.
+                    if (isHeld) DisposableEffect(Unit) { onDispose { drag.end(e.key, settle = false) } }
+                    val locked = i == 1 && heldNext
                     QueueRow(
-                        track = t,
+                        track = e.track,
                         current = i == 0,
-                        carried = isCarried,
-                        offset = { if (isCarried) offset.value else 0f },
-                        lift = { if (isCarried) lift.value else 0f },
-                        onPlay = { actions.playback.skipTo(index) },
-                        onRemove = { actions.playback.remove(index) },
-                        onPickUp = { pickUp(key, index) },
-                        onCarry = ::carry,
-                        onDrop = ::drop,
-                        modifier = Modifier
-                            .zIndex(if (isCarried) 1f else 0f)
-                            .animateItem(fadeInSpec = null, fadeOutSpec = null, placementSpec = if (isCarried) null else Motion.fluid(0.4f, 0.9f, IntOffset.VisibilityThreshold)),
+                        mixingIn = locked,
+                        movable = i > 0 && !locked,
+                        onPlay = { actions.playback.skipTo(e.index) },
+                        onRemove = { actions.playback.remove(e.index) },
+                        onDragStart = { if (drag.start(e.key)) haptics.strong() },
+                        onDrag = drag::drag,
+                        onDragEnd = { drag.end(e.key) },
+                        modifier = if (isHeld) {
+                            Modifier.alpha(0f)
+                        } else {
+                            Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null, placementSpec = Motion.fluid(0.35f, 0.9f, IntOffset.VisibilityThreshold))
+                        },
                     )
                 }
             }
-            // Where it will land: a line of light in the gap, gliding from gap to gap.
-            LandingLine(list = list, carried = { carried }, from = { from }, target = ::target, keys = keys, first = first, lift = { lift.value })
-        }
-    }
-}
-
-/**
- * The line showing where a carried song will land: a hairline of light across the gap, brightest at
- * its start, where a small point of light sits. It glides between gaps on a spring and shows only
- * while a song is carried away from its own place.
- */
-@Composable
-private fun LandingLine(
-    list: androidx.compose.foundation.lazy.LazyListState,
-    carried: () -> String?,
-    from: () -> Int,
-    target: () -> Int,
-    keys: List<String>,
-    first: Int,
-    lift: () -> Float,
-) {
-    val y = remember { Animatable(0f) }
-    val shown = remember { Animatable(0f) }
-    var placed by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        snapshotFlow {
-            val c = carried() ?: return@snapshotFlow null
-            val t = target()
-            val f = from()
-            if (t < 0 || t == f) return@snapshotFlow -1f
-            val info = list.layoutInfo
-            val near = info.visibleItemsInfo.firstOrNull { it.key == keys.getOrNull(t - first) } ?: return@snapshotFlow null
-            if (c.isEmpty()) null else if (t > f) (near.offset + near.size).toFloat() else near.offset.toFloat()
-        }.collect { gap ->
-            when {
-                gap == null || gap < 0f -> launch { shown.animateTo(0f, Motion.fluid(0.25f, 1f)) }
-                else -> {
-                    if (!placed || shown.value < 0.02f) { y.snapTo(gap); placed = true } else launch { y.animateTo(gap, Motion.fluid(0.3f, 0.86f)) }
-                    launch { shown.animateTo(1f, Motion.fluid(0.25f, 1f)) }
+            // The song in hand, over the list where the finger holds it.
+            drag.held?.let { held ->
+                Box(Modifier.matchParentSize().padding(horizontal = Space.edge)) {
+                    QueueRow(
+                        track = held.track,
+                        current = false,
+                        mixingIn = false,
+                        movable = true,
+                        lifted = { drag.lift.value },
+                        interactive = false,
+                        onPlay = {},
+                        onRemove = {},
+                        modifier = Modifier.offset { IntOffset(0, drag.heldTop.roundToInt()) },
+                    )
                 }
             }
         }
     }
-    Canvas(Modifier.fillMaxSize().padding(horizontal = Space.edge)) {
-        val a = shown.value * lift().coerceIn(0f, 1f)
-        if (a <= 0.01f) return@Canvas
-        val at = y.value
-        drawLine(
-            Brush.horizontalGradient(0f to Color.White.copy(alpha = 0.95f * a), 0.7f to Color.White.copy(alpha = 0.5f * a), 1f to Color.Transparent),
-            Offset(0f, at), Offset(size.width, at), strokeWidth = 1.5.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round,
-        )
-        drawLine(Color.White.copy(alpha = 0.12f * a), Offset(0f, at), Offset(size.width * 0.8f, at), strokeWidth = 6.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
-        drawCircle(Color.White.copy(alpha = a), radius = 3.dp.toPx(), center = Offset(0f, at))
-        drawCircle(Color.White.copy(alpha = 0.25f * a), radius = 8.dp.toPx(), center = Offset(0f, at))
+}
+
+/**
+ * How far in from either end of the list a carried song starts scrolling it, and how fast it scrolls
+ * once it's right at the edge: about six rows a second (BitChord's numbers).
+ */
+private val QueueEdgeZone = 40.dp
+private val QueueEdgeSpeed = 340.dp
+
+/**
+ * The pace, in pixels a second, to scroll the list at while a song spanning [top] to [bottom] is held
+ * in a list showing [viewportStart] to [viewportEnd]: negative towards its start, positive towards its
+ * end, nothing while it's clear of both. From a fifth of [speed] as it enters the [zone], so the list
+ * visibly moves at once, up to all of it at the edge.
+ */
+internal fun edgeScrollSpeed(top: Float, bottom: Float, viewportStart: Int, viewportEnd: Int, zone: Float, speed: Float): Float {
+    if (zone <= 0f) return 0f
+    val intoStart = (viewportStart + zone) - top
+    val intoEnd = bottom - (viewportEnd - zone)
+    val reach = when {
+        intoStart > 0f && intoEnd <= 0f -> -intoStart
+        intoEnd > 0f && intoStart <= 0f -> intoEnd
+        else -> return 0f
+    }
+    val ramp = speed * (0.2f + 0.8f * (abs(reach) / zone).coerceAtMost(1f))
+    return if (reach < 0f) -ramp else ramp
+}
+
+@Composable
+private fun rememberQueueDrag(list: androidx.compose.foundation.lazy.LazyListState, rows: List<QueueEntry>, onMove: (Int, Int) -> Unit): QueueDrag {
+    val scope = rememberCoroutineScope()
+    val drag = remember(list) { QueueDrag(list, scope) }
+    drag.rows = rows
+    drag.onMove = onMove
+    with(LocalDensity.current) {
+        drag.edgeZone = QueueEdgeZone.toPx()
+        drag.edgeSpeed = QueueEdgeSpeed.toPx()
+    }
+    // Held near either edge, the song scrolls the list under itself. The finger stays put, so each
+    // frame's scroll is settled as if the list had moved and the song hadn't: it trades places with
+    // the rows going past on the same terms.
+    val direction = drag.autoScrollDir
+    LaunchedEffect(drag, direction) {
+        if (direction == 0) return@LaunchedEffect
+        list.scroll {
+            var previous = withFrameNanos { it }
+            while (true) {
+                val now = withFrameNanos { it }
+                // A dropped frame paid back in full lands as a lurch, so it isn't.
+                val seconds = ((now - previous) / 1_000_000_000f).coerceAtMost(1f / 30f)
+                previous = now
+                if (scrollBy(drag.autoScrollSpeed * seconds) == 0f) break
+                drag.scrolled()
+            }
+        }
+    }
+    return drag
+}
+
+/**
+ * The one move Up next can have at a time (BitChord's `QueueDrag`). Everything turns on where the finger
+ * holds the song's middle in the list's view; only the finger moves it. Swaps are read off the live
+ * layout against it, each sent to the queue the moment the song crosses a neighbour, and the song itself
+ * is drawn at [heldTop] over the list, never from its own row, which jumps a whole row the frame a swap
+ * lands. Let go, it settles into its row on a spring.
+ */
+@androidx.compose.runtime.Stable
+private class QueueDrag(private val list: androidx.compose.foundation.lazy.LazyListState, private val scope: kotlinx.coroutines.CoroutineScope) {
+    var rows: List<QueueEntry> = emptyList()
+    var onMove: (Int, Int) -> Unit = { _, _ -> }
+    var edgeZone = 0f
+    var edgeSpeed = 0f
+
+    /** The song in hand; null at rest. */
+    var held by mutableStateOf<QueueEntry?>(null)
+        private set
+
+    /** Where the song in hand is drawn: its top in the list's view, kept on screen. */
+    var heldTop by mutableFloatStateOf(0f)
+        private set
+
+    /** How far it has lifted out of the list. */
+    val lift = Animatable(0f)
+
+    /** -1, 0 or 1: state, as it starts and stops the scrolling. */
+    var autoScrollDir by mutableIntStateOf(0)
+        private set
+
+    /** Signed, pixels a second. Not state: only the scrolling reads it, once a frame. */
+    var autoScrollSpeed = 0f
+        private set
+
+    private var heldCenter = 0f
+    private var heldSize = 0
+
+    /** Where the last swap sent will put the song, until the list shows it there. */
+    private var awaiting: Int? = null
+    private var landing: kotlinx.coroutines.Job? = null
+
+    fun start(key: String): Boolean {
+        if (held != null) return false
+        val entry = rows.firstOrNull { it.key == key } ?: return false
+        val item = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key } ?: return false
+        heldSize = item.size
+        heldCenter = item.offset + item.size / 2f
+        heldTop = item.offset.toFloat()
+        awaiting = null
+        held = entry
+        scope.launch { lift.animateTo(1f, Motion.bouncy()) }
+        return true
+    }
+
+    fun drag(deltaY: Float) = settle(deltaY)
+
+    fun scrolled() = settle(0f)
+
+    /** Let go: into its row on a spring, then the row shows again. [settle] false: gone at once. */
+    fun end(key: String, settle: Boolean = true) {
+        if (held?.key != key || landing?.isActive == true) return
+        awaiting = null
+        setAutoScroll(0f)
+        val slot = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }
+        if (!settle || slot == null) {
+            held = null
+            scope.launch { lift.snapTo(0f) }
+            return
+        }
+        landing = scope.launch {
+            kotlinx.coroutines.coroutineScope {
+                launch {
+                    // Into its row as the row is now, every frame: a list still moving under it (a fling,
+                    // a song arriving above) mustn't leave it landing where its row was when it was let go.
+                    val glide = app.aether.core.designsystem.theme.FluidValue(heldTop, FluidSpring.Snappy)
+                    var target = slot.offset.toFloat()
+                    var last = withFrameNanos { it }
+                    while (true) {
+                        val now = withFrameNanos { it }
+                        list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.let { target = it.offset.toFloat() }
+                        glide.retarget(target)
+                        heldTop = glide.step(((now - last) / 1e9f).coerceIn(0f, 1f / 30f))
+                        last = now
+                        if (glide.resting) break
+                    }
+                }
+                launch { lift.animateTo(0f, Motion.snappy()) }
+            }
+            held = null
+        }
+    }
+
+    private fun settle(deltaY: Float) {
+        val key = held?.key ?: return
+        if (landing?.isActive == true) return
+        val rows = rows
+        val info = list.layoutInfo
+        val items = info.visibleItemsInfo
+        val half = heldSize / 2f
+        // Stopped at the ends of the songs it can trade with, where those are on screen.
+        var center = heldCenter + deltaY
+        rows.firstOrNull()?.let { f -> items.firstOrNull { it.key == f.key }?.let { center = center.coerceAtLeast(it.offset + half) } }
+        rows.lastOrNull()?.let { l -> items.firstOrNull { it.key == l.key }?.let { center = center.coerceAtMost(it.offset + it.size - half) } }
+        heldCenter = center
+        val top = center - half
+        val minTop = info.viewportStartOffset.toFloat()
+        heldTop = top.coerceIn(minTop, (info.viewportEndOffset - heldSize).toFloat().coerceAtLeast(minTop))
+
+        // Its row is out of view: nothing to swap against until the list brings it back.
+        val dragged = items.firstOrNull { it.key == key } ?: return setAutoScroll(0f)
+        aimAutoScroll(top, key)
+        // A swap already sent but not laid out yet: deciding another off the old layout would send it twice.
+        awaiting?.let {
+            if (dragged.index != it) return
+            awaiting = null
+        }
+        val target = items
+            .filter { item -> item.key != key && rows.any { it.key == item.key } }
+            .minByOrNull { abs(it.offset + it.size / 2f - center) }
+            ?: return
+        // Half a row of overlap a swap, so a song isn't traded back and forth over a pixel of travel.
+        if (abs(center - (target.offset + target.size / 2f)) > target.size / 2f) return
+        // The list keeps its place by its first visible row: move that one while there's list above it
+        // and the whole list follows by a row. Wait for the scroll to bring the next one in.
+        if (target.index == list.firstVisibleItemIndex && list.canScrollBackward) return
+        val from = rows.firstOrNull { it.key == key }?.index ?: return
+        val to = rows.firstOrNull { it.key == target.key }?.index ?: return
+        onMove(from, to)
+        awaiting = target.index
+    }
+
+    /** Only while there's a song that way to trade with, and list left to scroll. */
+    private fun aimAutoScroll(top: Float, key: String) {
+        val info = list.layoutInfo
+        val speed = edgeScrollSpeed(top, top + heldSize, info.viewportStartOffset, info.viewportEndOffset, edgeZone, edgeSpeed)
+        val blocked = when {
+            speed < 0f -> rows.firstOrNull()?.key == key || !list.canScrollBackward
+            speed > 0f -> rows.lastOrNull()?.key == key || !list.canScrollForward
+            else -> true
+        }
+        setAutoScroll(if (blocked) 0f else speed)
+    }
+
+    private fun setAutoScroll(speed: Float) {
+        autoScrollSpeed = speed
+        val direction = when {
+            speed > 0f -> 1
+            speed < 0f -> -1
+            else -> 0
+        }
+        if (autoScrollDir != direction) autoScrollDir = direction
     }
 }
 
 /**
- * A queued song. Its handle (or a long press anywhere on it) picks it up: it lifts a little out of
- * the list, larger, onto the selector's lit glass with a soft shadow beneath, and follows the finger;
- * let go and it settles into the gap the line shows. The cross takes it out of the queue.
+ * One song in Up next: touched, it plays; its handle (three hairlines, as iOS draws its own) moves it,
+ * and so does a long press anywhere on it. [lifted] is the copy drawn under the finger while it's carried.
  */
 @Composable
 private fun QueueRow(
     track: Track,
     current: Boolean,
-    carried: Boolean,
-    offset: () -> Float,
-    lift: () -> Float,
+    /** Automix is bringing this song in: it can't be moved or taken out until it plays. */
+    mixingIn: Boolean,
+    movable: Boolean,
     onPlay: () -> Unit,
     onRemove: () -> Unit,
-    onPickUp: () -> Unit,
-    onCarry: (Float) -> Unit,
-    onDrop: () -> Unit,
     modifier: Modifier = Modifier,
+    lifted: () -> Float = { 0f },
+    /** False for the copy under the finger: the touch stays with the row in the list. */
+    interactive: Boolean = true,
+    onDragStart: () -> Unit = {},
+    onDrag: (Float) -> Unit = {},
+    onDragEnd: () -> Unit = {},
 ) {
-    val pickUp by rememberUpdatedState(onPickUp)
-    val carry by rememberUpdatedState(onCarry)
-    val drop by rememberUpdatedState(onDrop)
-    // The row moves with the finger, so the finger is measured on the window, not on the row: measured
-    // on the moving row, each step was partly cancelled by the row's own move, and it lagged behind.
-    var rowAt by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    var handleAt by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val start by rememberUpdatedState(onDragStart)
+    val move by rememberUpdatedState(onDrag)
+    val end by rememberUpdatedState(onDragEnd)
+    val dragging = movable && interactive
     Row(
         modifier
             .fillMaxWidth()
-            .onGloballyPositioned { rowAt = it }
             .graphicsLayer {
-                val l = lift()
-                translationY = offset()
+                val l = lifted()
                 val k = 1f + 0.035f * l
                 scaleX = k
                 scaleY = k
                 shadowElevation = 16.dp.toPx() * l
                 shape = Corners.Medium
                 clip = false
+                alpha = if (mixingIn) 0.55f else 1f
             }
             // Lifted, it's a card of its own: dark beneath, so the songs it passes over don't show
             // through, and lit at its rim as the selector is.
             .drawWithCache {
                 val outline = Corners.Medium.createOutline(size, layoutDirection, this)
                 onDrawBehind {
-                    val l = lift().coerceIn(0f, 1f)
+                    val l = lifted().coerceIn(0f, 1f)
                     if (l > 0.004f) drawOutline(outline, Color(0xFF151515).copy(alpha = 0.96f * l))
                 }
             }
-            .litDrop(Corners.Medium) { lift() * 0.9f }
+            .litDrop(Corners.Medium) { lifted() * 0.9f }
             .then(
-                if (current) Modifier else Modifier.pointerInput(Unit) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val held = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
-                        pickUp()
-                        var lastY = rowAt?.localToWindow(held.position)?.y ?: held.position.y
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            if (!change.pressed) break
-                            change.consume()
-                            val y = rowAt?.localToWindow(change.position)?.y ?: change.position.y
-                            carry(y - lastY)
-                            lastY = y
-                        }
-                        drop()
+                if (!dragging) Modifier else Modifier.pointerInput(Unit) {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { start() },
+                        onDragEnd = { end() },
+                        onDragCancel = { end() },
+                    ) { change, amount ->
+                        change.consume()
+                        move(amount.y)
                     }
                 },
             ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.weight(1f).padding(start = 6.dp)) {
-            TrackRow(track, onClick = onPlay, playing = current, trailing = {})
+            TrackRow(track, onClick = if (interactive) onPlay else ({}), playing = current, trailing = {})
         }
-        if (!current) {
-            IconAction(Glyph.Close, "Remove from queue", onRemove, size = 14.dp)
-            // The handle: three hairlines, as iOS draws its own. A drag here starts at once.
+        if (mixingIn) {
+            // Already playing, rising under this song: it stays where it is until it's on.
+            Strapline("Mixing in", Modifier.padding(end = 12.dp))
+        } else if (!current) {
+            IconAction(Glyph.Close, "Remove from queue", if (interactive) onRemove else ({}), size = 14.dp)
             Box(
                 Modifier
                     .size(44.dp)
-                    .onGloballyPositioned { handleAt = it }
                     .semantics { contentDescription = "Move ${track.title}" }
-                    .pointerInput(Unit) {
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            down.consume()
-                            pickUp()
-                            var lastY = handleAt?.localToWindow(down.position)?.y ?: down.position.y
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!change.pressed) break
+                    .then(
+                        if (!dragging) Modifier else Modifier.pointerInput(Unit) {
+                            detectDragGestures(
+                                onDragStart = { start() },
+                                onDragEnd = { end() },
+                                onDragCancel = { end() },
+                            ) { change, amount ->
                                 change.consume()
-                                val y = handleAt?.localToWindow(change.position)?.y ?: change.position.y
-                                carry(y - lastY)
-                                lastY = y
+                                move(amount.y)
                             }
-                            drop()
-                        }
-                    },
+                        },
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Canvas(Modifier.size(18.dp, 12.dp)) {
-                    val c = Ink.White.copy(alpha = if (carried) 0.95f else 0.45f)
+                    val c = Ink.White.copy(alpha = if (lifted() > 0.5f) 0.95f else 0.45f)
                     val w = 1.2.dp.toPx()
                     for (k in 0..2) {
                         val yy = size.height * k / 2f

@@ -89,3 +89,19 @@ The guest visitor id the music page is served with is now 446 characters (a new 
 12). PODIUM's `PageConfigParser` accepts at most 200, so PODIUM's catalogue client currently runs
 without a visitor id. Requests still answer, but every one is a new visitor. The client here accepts
 up to 2,000.
+
+## 7. Changing the account's own playlists (signed in, 2026-11-24)
+
+Checked live from the A059 through the debug build's `--es aether.debug synccheck`, `adoptcheck`,
+`gonecheck`, `likecheck` and `syncprobe` (src/debug/SyncCheck.kt), on the listener's own account, with
+their leave, on throwaway playlists named "AETHER sync test".
+
+| What | Request | What came back |
+|---|---|---|
+| Make a playlist | `playlist/create` with `title`, `description`, `privacyStatus: PRIVATE`, `videoIds` | `{"playlistId": "PL…"}`. Read straight back it doesn't answer (the page is unreadable); a second later it's whole, its songs in order. |
+| Add songs | `browse/edit_playlist`, `ACTION_ADD_VIDEO` with `addedVideoId`, `dedupeOption: DEDUPE_OPTION_SKIP` | `status: STATUS_SUCCEEDED`; the songs at the end, read back at once. |
+| Take songs out | `ACTION_REMOVE_VIDEO` with `removedVideoId` and the entry's `setVideoId` (`playlistItemData.playlistSetVideoId` on the playlist's page) | Succeeded; gone when read back. |
+| Rename | `ACTION_SET_PLAYLIST_NAME` with `playlistName` | Succeeded; the new name read back at once (once, a read soon after gave the old name). |
+| Delete | `playlist/delete` | Succeeded. The deleted playlist's page doesn't answer "not found": it reads as unreadable, for minutes after, as a playlist does for a moment after it's made. Gone from the account's library list (`FEmusic_liked_playlists`). |
+| Whose playlist | the page's header | The listener's own come wrapped in `musicEditablePlaylistDetailHeaderRenderer`; a playlist saved from someone else doesn't (checked on both kinds in the listener's library). |
+| Like, unlike | `like/like`, `like/removelike` with `target.videoId` | A like shows in Liked Music (`VLLM`) at once; an unlike still showed 1.5 s later and was gone minutes later. |

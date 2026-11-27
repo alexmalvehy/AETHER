@@ -58,7 +58,7 @@ import app.aether.ui.detail.SleeveList
 
 /** One section of any feed: its heading, then its items in the form that suits them. */
 @Composable
-fun SectionBlock(section: FeedSection, modifier: Modifier = Modifier, topSpace: Dp = 52.dp) {
+fun SectionBlock(section: FeedSection, modifier: Modifier = Modifier, topSpace: Dp = 52.dp, playAsList: Boolean = false) {
     val actions = LocalActions.current
     Column(modifier.separate().fillMaxWidth().padding(top = topSpace)) {
         SectionHeading(
@@ -72,7 +72,7 @@ fun SectionBlock(section: FeedSection, modifier: Modifier = Modifier, topSpace: 
             section.style == SectionStyle.ROWS && tracks.isNotEmpty() -> QuickPicks(tracks)
             section.style == SectionStyle.LIST && tracks.isNotEmpty() -> TrackList(tracks.take(6))
             section.items.all { it is Link } -> LinkGrid(section.items.filterIsInstance<Link>())
-            else -> CardRow(section.items, wide = section.wide)
+            else -> CardRow(section.items, wide = section.wide, playAsList = playAsList)
         }
     }
 }
@@ -111,9 +111,14 @@ fun TrackList(tracks: List<Track>, numbered: Boolean = false, playContext: List<
     SleeveList(tracks, playContext, alone, artists)
 }
 
-/** A row of cards that bends light at the screen's edges as they pass. */
+/**
+ * A row of cards that bends light at the screen's edges as they pass. With [playAsList], a song or video
+ * in it plays with the row's others after it (an artist's music videos, one after another), as a list
+ * does; otherwise it plays with its radio.
+ */
 @Composable
-fun CardRow(items: List<MediaEntity>, wide: Boolean = false) {
+fun CardRow(items: List<MediaEntity>, wide: Boolean = false, playAsList: Boolean = false) {
+    val actions = LocalActions.current
     val state = rememberLazyListState()
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         // A row of playlists is a row of folders: its edge glass is the gentler one.
@@ -125,7 +130,13 @@ fun CardRow(items: List<MediaEntity>, wide: Boolean = false) {
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             // The catalogue sometimes lists a card twice; a repeated key would end the app.
-            items(items.distinctBy { it.stableKey() }, key = { it.stableKey() }) { EntityCard(it, wide) }
+            val cards = items.distinctBy { it.stableKey() }
+            val songs = if (playAsList) cards.filterIsInstance<Track>() else emptyList()
+            items(cards, key = { it.stableKey() }) { card ->
+                val at = if (card is Track) songs.indexOf(card) else -1
+                if (at >= 0 && songs.size > 1) TrackCard(card as Track, onClick = { actions.play(songs, at) }, wide = wide)
+                else EntityCard(card, wide)
+            }
         }
         // Beneath the cards (the row keeps room above for what it lifts), where the row is.
         StepIndicator(state, Modifier.offset(y = (-6).dp))

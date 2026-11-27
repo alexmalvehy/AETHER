@@ -38,6 +38,10 @@ class MainActivity : ComponentActivity() {
         val preview = intent?.getStringExtra("aether.preview")
         val previewWelcome = debug && preview == "welcome"
         if (debug && preview == "update") container.updates.checkNow(pretend = "0.0.1")
+        if (debug && preview == "morph") previewMorph()
+        if (debug) listeningCheck(intent)
+        // From the home-screen widget: the app opens on Now Playing.
+        if (intent?.getBooleanExtra(EXTRA_NOW_PLAYING, false) == true) NowPlayingAsked.value = true
         setContent { AetherRoot(container, playBoot = coldStart, systemReducesMotion = systemReducesMotion, previewWelcome = previewWelcome) }
         // Full screen (PODIUM's D-85): Android's bars hidden while the setting is on; a swipe from the
         // edge shows them for a moment. The pages keep the room the bars take, so nothing moves under
@@ -67,10 +71,62 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_NOW_PLAYING, false)) NowPlayingAsked.value = true
         // Debug builds: the update preview works on a running app too.
         if (packageName.endsWith(".debug") && intent.getStringExtra("aether.preview") == "update") {
             (application as AetherApp).container.updates.checkNow(pretend = "0.0.1")
         }
+        if (packageName.endsWith(".debug") && intent.getStringExtra("aether.preview") == "morph") {
+            setIntent(intent)
+            previewMorph()
+        }
+        // Debug builds: playlist sync checked live against the signed-in account (src/debug/SyncCheck.kt).
+        if (packageName.endsWith(".debug")) SyncCheck.handle(intent, (application as AetherApp).container, this)
+        // Debug builds: Now Playing's light changed to other colours, as a new song would change it, and back to the cover's own the next time, with no song changed.
+        if (packageName.endsWith(".debug") && intent.getStringExtra("aether.preview") == "light") {
+            app.aether.ui.player.AmbientPreview.turn.intValue++
+        }
+        // Debug builds: the wave the screen makes as the music goes out to a TV, with no TV.
+        if (packageName.endsWith(".debug") && intent.getStringExtra("aether.preview") == "handoff") {
+            app.aether.player.cast.CastController.previewHandoff()
+        }
+        if (packageName.endsWith(".debug")) listeningCheck(intent)
+    }
+
+    /**
+     * Debug builds: playback set up for a listening check from adb, on the running app. `--es aether.repeat
+     * off|all|one`, `--el aether.seek <ms>` (counted from the song's end when negative), `--es aether.play
+     * on|off`, applied in that order.
+     */
+    private fun listeningCheck(intent: android.content.Intent?) {
+        if (intent == null) return
+        val playback = (application as AetherApp).container.playback
+        intent.getStringExtra("aether.repeat")?.let { want ->
+            playback.setRepeat(
+                when (want) {
+                    "one" -> app.aether.core.model.RepeatMode.ONE
+                    "all" -> app.aether.core.model.RepeatMode.ALL
+                    else -> app.aether.core.model.RepeatMode.OFF
+                },
+            )
+        }
+        if (intent.hasExtra("aether.seek")) {
+            val at = intent.getLongExtra("aether.seek", 0L)
+            val duration = playback.state.value.durationMs
+            playback.seekTo(if (at < 0 && duration > 0) (duration + at).coerceAtLeast(0) else at.coerceAtLeast(0))
+        }
+        when (intent.getStringExtra("aether.play")) {
+            "on" -> if (!playback.state.value.isPlaying) playback.toggle()
+            "off" -> if (playback.state.value.isPlaying) playback.toggle()
+        }
+    }
+
+    /** Debug builds: Automix's change of cover from the playing song to the next, over ten seconds. */
+    private fun previewMorph() {
+        val state = (application as AetherApp).container.playback.state.value
+        val from = state.current ?: return
+        val to = state.queue.getOrNull(state.index + 1) ?: return
+        app.aether.player.AutomixState.preview(lifecycleScope, from.id.value, to.id.value, 10f)
     }
 
     override fun onStart() {
@@ -95,11 +151,17 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    private companion object {
+    companion object {
+        /** An intent's ask to open on Now Playing (the home-screen widget's). */
+        const val EXTRA_NOW_PLAYING = "aether.nowplaying"
+
+        /** Asked to open on Now Playing, and not yet: the Shell opens it once there's a song to show. */
+        val NowPlayingAsked = kotlinx.coroutines.flow.MutableStateFlow(false)
+
         /** Per process: coming back to a running app never replays the boot. */
-        var booted = false
+        private var booted = false
 
         /** Long enough for the boot film and the first room to have the screen to themselves. */
-        const val UpdateCheckAfterMs = 6_000L
+        private const val UpdateCheckAfterMs = 6_000L
     }
 }

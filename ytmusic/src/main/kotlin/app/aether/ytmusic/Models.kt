@@ -195,6 +195,8 @@ data class Collection(
     val trackCount: Int?,
     val continuation: Continuation?,
     val isAlbum: Boolean,
+    /** The signed-in listener's own playlist: its page offers to edit it. */
+    val editable: Boolean = false,
 )
 
 data class ArtistPage(

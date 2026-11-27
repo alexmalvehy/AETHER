@@ -122,13 +122,15 @@ private fun tallest(saver: Boolean): Int = if (saver) 480 else 720
  */
 @OptIn(UnstableApi::class)
 @Composable
-fun MusicVideo(slot: VideoSlot, playing: Boolean, onGone: () -> Unit, modifier: Modifier = Modifier, onFailed: () -> Unit = {}) {
+fun MusicVideo(slot: VideoSlot, playing: Boolean, onGone: () -> Unit, modifier: Modifier = Modifier, onFailed: () -> Unit = {}, allowed: Boolean = true) {
     val container = LocalContainer.current
     val context = LocalContext.current
     val track = slot.track
     val saver by container.settings.efficient.collectAsStateWithLifecycle()
     val wanted by container.settings.songVideo.collectAsStateWithLifecycle()
-    val on = wanted && track.isVideo && !slot.leaving
+    // Not [allowed] while Now Playing is closed: no video is fetched for a song nobody is looking at,
+    // and one that was playing lets go of its player after a while, as when the key turns it off.
+    val on = wanted && track.isVideo && !slot.leaving && allowed
     // The player goes when the slot does.
     DisposableEffect(slot) { onDispose { slot.release() } }
     LaunchedEffect(on) {

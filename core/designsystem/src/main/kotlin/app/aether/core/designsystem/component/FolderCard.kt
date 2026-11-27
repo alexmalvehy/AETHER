@@ -21,11 +21,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
@@ -37,9 +37,7 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.layout.widthIn
-import app.aether.core.designsystem.theme.retained
 import androidx.compose.runtime.Stable
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
@@ -65,6 +63,14 @@ import app.aether.core.designsystem.theme.Type
 import app.aether.core.model.Artwork
 import kotlinx.coroutines.launch
 import kotlin.math.max
+import kotlin.math.roundToInt
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 
 /** One of a folder's "files": a song peeking out of it. */
 data class FolderFile(val label: String, val artwork: Artwork)
@@ -129,11 +135,13 @@ fun FolderCard(
     // In flight: the scale it's being drawn at, and what undoes it for anything that holds its size.
     val small = if (flying != null && width > 0.dp) fromWidth / width else 1f
     val scaled: () -> Float = if (flying != null) ({ small + (1f - small) * flying() }) else ({ 1f })
-    // The back and its songs one texture, the frosted front another, always painted flat and then only
-    // moved. It's those flat pictures that lean and tilt: painting its outlines under a 3D tilt made the
-    // GPU work out each one's coverage by hand, a tenth of a second or more for a large folder, and
-    // painting them again at all is what every folder on screen cost on every frame anything moved.
-    val kept = Modifier.retained()
+    // The back and the frosted front are pictures, painted once (FolderPanels): flat, they lean and tilt
+    // as pictures do. Painting the outlines under a 3D tilt made the GPU work out each one's coverage by
+    // hand, a tenth of a second or more for a large folder; painting them into layers of their own as
+    // each row came into view was most of what a first scroll through the Library cost.
+    val screen = LocalDensity.current
+    val frontW = with(screen) { width.roundToPx() }
+    val frontH = with(screen) { (height * 0.7f).roundToPx() }
 
     // A folder the source named no songs for still holds its own cover.
     val cards = remember(files, artwork) { files.ifEmpty { if (artwork.isEmpty) emptyList() else listOf(FolderFile("", artwork)) } }
@@ -145,6 +153,15 @@ fun FolderCard(
     val filePaints = listOf(rememberPicturePaint(f0.bitmap), rememberPicturePaint(f1.bitmap), rememberPicturePaint(f2.bitmap))
     val softShown = soft.arrival()
     val fileShown = listOf(f0.arrival(), f1.arrival(), f2.arrival())
+    // The frost for this folder at this size, painted off the main thread once its picture is here, and
+    // kept, so a row scrolled away and back has it at once. Until then it's painted live, as it looks.
+    val softKey = artwork.url(SoftPx) ?: ""
+    var frost by remember(softKey, frontW, frontH) { mutableStateOf(FolderPanels.frostIfPainted(softKey, frontW, frontH)) }
+    LaunchedEffect(soft.bitmap, softKey, frontW, frontH) {
+        val picture = soft.bitmap ?: return@LaunchedEffect
+        if (frost != null || frontW <= 0 || frontH <= 0) return@LaunchedEffect
+        frost = withContext(Dispatchers.Default) { FolderPanels.frost(softKey, frontW, frontH, picture, FrostStrength, MonoValues, screen) }
+    }
 
     Column(modifier.width(width), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
@@ -195,39 +212,45 @@ fun FolderCard(
                     cameraDistance = 12f * density
                 },
         ) {
-            // The back panel and the songs peeking out of it: one drawing.
+            // The back panel: its outline alone, painted once and kept. With the songs in the same
+            // drawing, every frame they rose in flight painted that large curved outline again, worked
+            // out by the processor and sent to the GPU each time.
             Spacer(
-                kept.fillMaxSize().drawWithCache {
-                    val backPath = outlinePath(FolderBackShape, size, layoutDirection, this)
-                    val backFill = Brush.verticalGradient(listOf(FolderBackTop, FolderBackFoot))
-                    onDrawBehind {
-                        drawPath(backPath, backFill)
-                        // Files: the playlist's songs, peeking out and rising, each cover as it is:
-                        // nothing is written on them and nothing darkens them.
-                        val opening = open()
-                        // A point on the folder in flight, as many of its own points as make one on screen.
-                        val pt = 1f / scaled().coerceAtLeast(0.01f)
-                        val lift = (press.value * 7f * pt + opening * 22f).dp.toPx()
-                        for (i in 0 until minOf(3, cards.size)) {
-                            val fw = size.width * (0.62f - i * 0.06f)
-                            val fh = size.height * 0.4f
-                            val left = size.width - (10 + i * 12).dp.toPx() * pt - fw
-                            val top = size.height * 0.14f + (i * 4).dp.toPx() * pt - lift * (1f - i * 0.25f)
-                            val angle = (i - 1) * 2.2f * (1f + opening)
-                            translate(left, top) {
-                                rotate(angle, pivot = Offset(fw / 2f, fh / 2f)) {
-                                    val card = Path().apply { addRoundRect(androidx.compose.ui.geometry.RoundRect(0f, 0f, fw, fh, CornerRadius(5.dp.toPx() * pt))) }
-                                    drawPath(card, Ink.Coal)
-                                    filePaints[i]?.draw(this, card, Rect0(Size(fw, fh)), fileShown[i]())
-                                }
+                Modifier.fillMaxSize().drawWithCache {
+                    val back = FolderPanels.back(size.width.roundToInt(), size.height.roundToInt(), this)
+                    onDrawBehind { drawImage(back) }
+                },
+            )
+            // The playlist's songs peeking out of the back and rising: plain rounded cards, which the
+            // GPU draws as they move, each cover as it is (nothing is written on them, nothing darkens them).
+            Spacer(
+                Modifier.fillMaxSize().drawBehind {
+                    val opening = open()
+                    // A point on the folder in flight, as many of its own points as make one on screen.
+                    val pt = 1f / scaled().coerceAtLeast(0.01f)
+                    val lift = (press.value * 7f * pt + opening * 22f).dp.toPx()
+                    for (i in 0 until minOf(3, cards.size)) {
+                        val fw = size.width * (0.62f - i * 0.06f)
+                        val fh = size.height * 0.4f
+                        val left = size.width - (10 + i * 12).dp.toPx() * pt - fw
+                        val top = size.height * 0.14f + (i * 4).dp.toPx() * pt - lift * (1f - i * 0.25f)
+                        val angle = (i - 1) * 2.2f * (1f + opening)
+                        translate(left, top) {
+                            rotate(angle, pivot = Offset(fw / 2f, fh / 2f)) {
+                                val card = Path().apply { addRoundRect(androidx.compose.ui.geometry.RoundRect(0f, 0f, fw, fh, CornerRadius(5.dp.toPx() * pt))) }
+                                drawPath(card, Ink.Coal)
+                                filePaints[i]?.draw(this, card, Rect0(Size(fw, fh)), fileShown[i]())
                             }
                         }
                     }
                 },
             )
-            // Front panel: grey frosted glass with the cover's light and shade in it, rim-lit, with the title.
+            // Front panel: grey frosted glass with the cover's light and shade in it, rim-lit, with the
+            // title. It tilts as a whole; its painting inside is kept flat, painted once (painted inside the
+            // tilt, it was painted again in perspective each time the tilt moved, and on every visit
+            // the glass made to the page), and its words stand over it.
             Box(
-                kept
+                Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .height(height * 0.7f)
@@ -235,25 +258,27 @@ fun FolderCard(
                         rotationX = -open() * 18f
                         transformOrigin = TransformOrigin(0.5f, 1f)
                         cameraDistance = 12f * density
-                    }
-                    .drawWithCache {
+                    },
+            ) {
+                Spacer(
+                    Modifier.matchParentSize().drawWithCache {
+                        val w = size.width.roundToInt()
+                        val h = size.height.roundToInt()
+                        val glass = FolderPanels.frontGlass(w, h, this)
+                        // The rim (half a point of light inside the panel's edge) and the light along its top.
+                        val light = FolderPanels.frontLight(w, h, this)
                         val frontPath = outlinePath(FolderFrontShape, size, layoutDirection, this)
-                        val glass = Brush.verticalGradient(listOf(FolderFrontTop, FolderFrontFoot))
-                        val rim = Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.5f), Color.White.copy(alpha = 0.08f)))
-                        val sheen = Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.10f), Color.Transparent), endY = size.height * 0.3f)
-                        // The rim as it showed inside the panel's edge: half a point of light.
-                        val stroke = Stroke(0.5.dp.toPx())
                         // The frost overscans the panel by a third, so its soft edges never show.
                         val over = Rect0(size).inflate(0.35f)
                         onDrawBehind {
-                            drawPath(frontPath, glass)
-                            softPaint?.draw(this, frontPath, over, softShown() * FrostStrength, Mono)
-                            drawPath(frontPath, rim, style = stroke)
-                            // the light the glass catches along its top
-                            drawPath(frontPath, sheen)
+                            drawImage(glass)
+                            val painted = frost?.takeIf { it.width == w && it.height == h }
+                            if (painted != null) drawImage(painted, alpha = softShown().coerceIn(0f, 1f))
+                            else softPaint?.draw(this, frontPath, over, softShown() * FrostStrength, Mono)
+                            drawImage(light)
                         }
                     },
-            ) {
+                )
                 if (flying == null) {
                     FolderWords(title, detail, Modifier.align(Alignment.TopEnd).padding(top = height * 0.17f, end = WordsInset, start = WordsInset))
                 } else {
@@ -293,10 +318,10 @@ fun FolderCard(
 private val WordsInset = 12.dp
 
 /** The folder's greys: the same for every folder, whatever is in it. */
-private val FolderBackTop = Color(0xFF3A3A3D)
-private val FolderBackFoot = Color(0xFF2A2A2C)
-private val FolderFrontTop = Color(0xFF58585C)
-private val FolderFrontFoot = Color(0xFF3B3B3E)
+internal val FolderBackTop = Color(0xFF3A3A3D)
+internal val FolderBackFoot = Color(0xFF2A2A2C)
+internal val FolderFrontTop = Color(0xFF58585C)
+internal val FolderFrontFoot = Color(0xFF3B3B3E)
 
 /** How much of the cover's light and shade shows in the frost. */
 private const val FrostStrength = 0.4f
@@ -322,16 +347,13 @@ private class Rect0(val left: Float, val top: Float, val right: Float, val botto
 }
 
 /** Grey with a little contrast: what keeps a cover's colours out of the frost. */
-private val Mono = ColorFilter.colorMatrix(
-    ColorMatrix(
-        floatArrayOf(
-            0.2126f * 1.12f, 0.7152f * 1.12f, 0.0722f * 1.12f, 0f, -15.4f,
-            0.2126f * 1.12f, 0.7152f * 1.12f, 0.0722f * 1.12f, 0f, -15.4f,
-            0.2126f * 1.12f, 0.7152f * 1.12f, 0.0722f * 1.12f, 0f, -15.4f,
-            0f, 0f, 0f, 1f, 0f,
-        ),
-    ),
+private val MonoValues = floatArrayOf(
+    0.2126f * 1.12f, 0.7152f * 1.12f, 0.0722f * 1.12f, 0f, -15.4f,
+    0.2126f * 1.12f, 0.7152f * 1.12f, 0.0722f * 1.12f, 0f, -15.4f,
+    0.2126f * 1.12f, 0.7152f * 1.12f, 0.0722f * 1.12f, 0f, -15.4f,
+    0f, 0f, 0f, 1f, 0f,
 )
+private val Mono = ColorFilter.colorMatrix(ColorMatrix(MonoValues))
 
 /**
  * A picture ready to paint into an outline: its shader, brush and placement made once for the
@@ -369,7 +391,7 @@ private fun outlinePath(shape: Shape, size: Size, layoutDirection: LayoutDirecti
     }
 
 /** The folder's back: a rounded panel with a tab rising on its right. */
-private object FolderBackShape : Shape {
+internal object FolderBackShape : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
         val r = size.width * 0.06f
         val tabTop = 0f
@@ -393,7 +415,7 @@ private object FolderBackShape : Shape {
 }
 
 /** The folder's front: lower on the left, rising to the right in one soft diagonal. */
-private object FolderFrontShape : Shape {
+internal object FolderFrontShape : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
         val r = size.width * 0.06f
         val low = size.height * 0.16f

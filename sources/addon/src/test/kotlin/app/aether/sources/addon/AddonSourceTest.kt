@@ -5,6 +5,9 @@ import app.aether.core.model.Outcome
 import app.aether.core.model.SourceError
 import app.aether.core.model.Track
 import kotlinx.coroutines.runBlocking
+import okio.buffer
+import okhttp3.ResponseBody.Companion.asResponseBody
+import kotlinx.coroutines.asCoroutineDispatcher
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -119,6 +122,38 @@ class AddonSourceTest {
         val r = AddonSource.connect("https://addon.example/a/manifest.json", addon.http)
         assertIs<Outcome.Ok<AddonSource>>(r)
         assertEquals(2, addon.asked.count { it.endsWith("/manifest.json") })
+    }
+
+    @Test fun `answers are read and closed off the thread that asked, as Android needs of the main thread`() {
+        val touched = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val path = chain.request().url.encodedPath
+            val text = when {
+                path.endsWith("/manifest.json") -> MANIFEST
+                path.endsWith("/search") -> """{"tracks":[{"id":"t1","title":"Hello","artist":"Adele","duration":295}]}"""
+                else -> """{"url":"https://cdn/asked.flac"}"""
+            }
+            // A body that says which thread read it and which closed it.
+            val source = object : okio.ForwardingSource(okio.Buffer().writeUtf8(text)) {
+                override fun read(sink: okio.Buffer, byteCount: Long): Long { touched += Thread.currentThread().name; return super.read(sink, byteCount) }
+                override fun close() { touched += Thread.currentThread().name; super.close() }
+            }
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("x")
+                .body(source.buffer().asResponseBody("application/json".toMediaType(), text.length.toLong())).build()
+        }.build()
+        val caller = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "caller") }
+        try {
+            runBlocking(caller.asCoroutineDispatcher()) {
+                val s = (AddonSource.connect("https://addon.example/a/manifest.json", http) as Outcome.Ok).value
+                val row = (s.search("Hello", null) as Outcome.Ok).value.items.filterIsInstance<Track>().single()
+                assertIs<Outcome.Ok<*>>(s.stream(row.id, false))
+            }
+        } finally {
+            caller.shutdown()
+        }
+        assertTrue(touched.isNotEmpty())
+        // In tests a thread's name carries its coroutine ("caller @coroutine#11").
+        assertFalse(touched.any { it.startsWith("caller") }, "read or closed on the asking thread: $touched")
     }
 
     @Test fun `a refusal's words are read from either spelling`() {

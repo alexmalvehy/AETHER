@@ -76,6 +76,7 @@ data class PlaylistSummary(
     val artworkUri: String?,
     val folderId: Long?,
     val position: Int,
+    val createdAt: Long,
     val updatedAt: Long,
     val count: Int,
 )
@@ -105,6 +106,7 @@ interface LibraryDao {
     @Query("DELETE FROM saved WHERE id = :id") suspend fun unsave(id: String)
     @Query("SELECT json FROM saved WHERE kind = :kind ORDER BY savedAt DESC") fun saved(kind: String): Flow<List<String>>
     @Query("SELECT EXISTS(SELECT 1 FROM saved WHERE id = :id)") fun isSaved(id: String): Flow<Boolean>
+    @Query("SELECT id, savedAt FROM saved WHERE kind = :kind") fun savedTimes(kind: String): Flow<List<SavedTime>>
 
     @Upsert suspend fun searched(row: SearchRow)
     @Query("SELECT `query` FROM search ORDER BY at DESC LIMIT :limit") fun searches(limit: Int): Flow<List<String>>
@@ -113,6 +115,9 @@ interface LibraryDao {
 }
 
 data class HistoryEntry(val playedAt: Long, val json: String)
+
+/** When something of the catalogue's was saved in the library. */
+data class SavedTime(val id: String, val savedAt: Long)
 
 @Dao
 interface PlaylistDao {
@@ -126,7 +131,7 @@ interface PlaylistDao {
     @Query("DELETE FROM playlist WHERE id = :id") suspend fun delete(id: Long)
     @Query("DELETE FROM playlist_entry WHERE playlistId = :id") suspend fun deleteEntries(id: Long)
     @Query(
-        "SELECT p.id, p.title, p.description, p.artworkUri, p.folderId, p.position, p.updatedAt, " +
+        "SELECT p.id, p.title, p.description, p.artworkUri, p.folderId, p.position, p.createdAt, p.updatedAt, " +
             "(SELECT COUNT(*) FROM playlist_entry e WHERE e.playlistId = p.id) AS count FROM playlist p ORDER BY p.position, p.createdAt",
     )
     fun playlists(): Flow<List<PlaylistSummary>>

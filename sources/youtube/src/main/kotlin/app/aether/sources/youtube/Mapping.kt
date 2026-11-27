@@ -228,6 +228,7 @@ internal fun Collection.toPlaylistPage(playlistId: String) = PlaylistPage(
     details = secondSubtitle,
     description = description,
     next = continuation?.toToken(),
+    editable = editable,
 )
 
 internal fun ArtistPage.toArtistPage(browseId: String) = app.aether.core.model.ArtistPage(

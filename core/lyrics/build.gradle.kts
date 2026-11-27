@@ -34,4 +34,5 @@ tasks.register<JavaExec>("liveCheck") {
     classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("app.aether.core.lyrics.LiveCheckKt")
     providers.gradleProperty("debug").orNull?.let { systemProperty("debug", it) }
+    args = listOfNotNull(providers.gradleProperty("songs").orNull)
 }

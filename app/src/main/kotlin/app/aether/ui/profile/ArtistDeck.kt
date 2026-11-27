@@ -254,7 +254,7 @@ private fun ArtistFace(a: ArtistStat, rank: Int, of: Int, faces: Faces) {
                     contentScale = ContentScale.Fit,
                 )
             } else {
-                Txt(a.name.withoutEmoji(), Type.name(a.name, Type.Headline.copy(fontSize = Type.Headline.fontSize * 1.2f)), maxLines = 2, align = TextAlign.Start)
+                app.aether.core.designsystem.component.FittedName(a.name, Type.name(a.name, Type.Headline.copy(fontSize = Type.Headline.fontSize * 1.2f)), maxLines = 2, align = TextAlign.Start)
             }
             Spacer(Modifier.height(10.dp))
             Strapline("${a.plays} ${if (a.plays == 1) "play" else "plays"}  ·  ${listening(a.minutes.toLong())}", color = Color.White)

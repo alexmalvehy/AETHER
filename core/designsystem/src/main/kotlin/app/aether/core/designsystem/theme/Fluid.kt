@@ -173,8 +173,27 @@ class Glide(initial: Float, private val rest: Float = 0.0005f) {
     var isRunning by mutableStateOf(false)
         private set
     private val mutex = MutatorMutex()
+    private val track = VelocityWindow()
+    private var following = false
+
+    /**
+     * Held by a finger, or by a gesture's progress: it's put at [to] at once. Its speed is worked out
+     * from where it's been over the last ~90 ms (Apple's rolling window), so whatever carries it on
+     * when it's let go starts at the speed the finger had. Catching it mid-spring stops the spring.
+     */
+    suspend fun follow(to: Float, atNanos: Long = System.nanoTime()) = mutex.mutate {
+        if (!following) {
+            following = true
+            track.reset()
+            track.add(atNanos, value)
+        }
+        track.add(atNanos, to)
+        value = to
+        velocity = track.velocity()
+    }
 
     suspend fun to(target: Float, spring: FluidSpring) = mutex.mutate {
+        following = false
         val from = value
         val startVelocity = velocity
         if (from == target && startVelocity == 0f) return@mutate
@@ -202,6 +221,7 @@ class Glide(initial: Float, private val rest: Float = 0.0005f) {
     }
 
     suspend fun snap(to: Float) = mutex.mutate {
+        following = false
         value = to
         velocity = 0f
     }
@@ -209,6 +229,58 @@ class Glide(initial: Float, private val rest: Float = 0.0005f) {
     private companion object {
         const val FirstStep = 1f / 90f
         const val LongestStep = 1f / 30f
+    }
+}
+
+/**
+ * How fast something held is moving, from where it's been over the last [windowNanos] (Apple asks
+ * for 80 to 100 ms): the least-squares slope of the samples in that window, so one late or doubled
+ * sample can't spike it, and a finger that stopped before letting go reads as stopped.
+ */
+class VelocityWindow(private val windowNanos: Long = 90_000_000L) {
+    private val times = LongArray(Capacity)
+    private val values = FloatArray(Capacity)
+    private var count = 0
+    private var next = 0
+
+    fun reset() {
+        count = 0
+        next = 0
+    }
+
+    fun add(timeNanos: Long, value: Float) {
+        times[next] = timeNanos
+        values[next] = value
+        next = (next + 1) % Capacity
+        if (count < Capacity) count++
+    }
+
+    /** Units a second; 0 until there are two samples in the window. */
+    fun velocity(): Float {
+        if (count < 2) return 0f
+        val newest = times[(next - 1 + Capacity) % Capacity]
+        var n = 0
+        var sumT = 0.0
+        var sumV = 0.0
+        var sumTT = 0.0
+        var sumTV = 0.0
+        for (i in 0 until count) {
+            val k = (next - 1 - i + 2 * Capacity) % Capacity
+            val age = newest - times[k]
+            if (age > windowNanos) break
+            val t = -age / 1e9
+            val v = values[k].toDouble()
+            sumT += t; sumV += v; sumTT += t * t; sumTV += t * v
+            n++
+        }
+        if (n < 2) return 0f
+        val denominator = n * sumTT - sumT * sumT
+        if (denominator <= 1e-12) return 0f
+        return ((n * sumTV - sumT * sumV) / denominator).toFloat()
+    }
+
+    private companion object {
+        const val Capacity = 20
     }
 }
 

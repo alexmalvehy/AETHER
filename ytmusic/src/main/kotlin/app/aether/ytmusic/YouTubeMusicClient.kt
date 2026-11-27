@@ -7,7 +7,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import java.io.IOException
 import java.net.URLEncoder
@@ -94,12 +96,38 @@ internal class YouTubeMusicClient(
             }
         }
 
+    /**
+     * Songs by their ids, as a queue takes them in (YouTube Music's own "add to queue"): each with its
+     * length, which a search's mixed answer gives only to its top result's songs.
+     */
+    suspend fun queue(videoIds: List<String>): YtResult<JsonObject> =
+        call("music/get_queue", null) { putJsonArray("videoIds") { videoIds.forEach { add(it) } } }
+
     suspend fun like(videoId: String, liked: Boolean): YtResult<JsonObject> =
         call(if (liked) "like/like" else "like/removelike", null) {
             putJsonObject("target") { put("videoId", videoId) }
         }
 
     suspend fun accountMenu(): YtResult<JsonObject> = call("account/account_menu", null) {}
+
+    /** A new playlist in the signed-in account, as YouTube Music's own page makes one. */
+    suspend fun createPlaylist(title: String, description: String?, privacy: String, videoIds: List<String>): YtResult<JsonObject> =
+        call("playlist/create", null) {
+            put("title", title)
+            put("description", description.orEmpty())
+            put("privacyStatus", privacy)
+            if (videoIds.isNotEmpty()) putJsonArray("videoIds") { videoIds.forEach { add(it) } }
+        }
+
+    /** Changes to one of the account's playlists ([playlistId] without "VL"), as the page's editor sends them. */
+    suspend fun editPlaylist(playlistId: String, actions: List<JsonObject>): YtResult<JsonObject> =
+        call("browse/edit_playlist", null) {
+            put("playlistId", playlistId)
+            putJsonArray("actions") { actions.forEach { add(it) } }
+        }
+
+    suspend fun deletePlaylist(playlistId: String): YtResult<JsonObject> =
+        call("playlist/delete", null) { put("playlistId", playlistId) }
 
     // --- Requests ------------------------------------------------------------------------------------
 

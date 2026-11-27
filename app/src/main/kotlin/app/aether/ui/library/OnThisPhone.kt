@@ -1,5 +1,6 @@
 package app.aether.ui.library
 
+import app.aether.ui.folderPreview
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -52,7 +53,13 @@ import app.aether.ui.common.rememberPageListState
 import app.aether.ui.detail.BackLine
 import app.aether.ui.detail.SleeveHead
 import app.aether.ui.detail.sleeveTracks
-import app.aether.ui.pageLanded
+import app.aether.ui.rememberStagedRows
+import app.aether.ui.common.ListOrder
+import app.aether.ui.common.OrderBy
+import app.aether.ui.common.OrderKey
+import app.aether.ui.common.inOrder
+import app.aether.ui.common.rememberOrdering
+import app.aether.ui.common.Ordering
 
 /** A folder on a shelf: how it looks and where it opens. */
 internal class PhoneCard(val preview: FolderPreview, val route: Route)
@@ -77,6 +84,23 @@ internal class PhoneMusic(
 
     fun under(path: String): List<PhoneSong> = songs.filter { it.folder.startsWith(path) }
 
+    private val ordered = HashMap<ListOrder, List<PhoneSong>>()
+
+    /** The phone's songs in [order], sorted once for each order while the music is as it is. */
+    fun songsIn(order: ListOrder): List<PhoneSong> = ordered.getOrPut(order) { songs.inOrder(order, PhoneOrder) }
+
+    fun tracksIn(order: ListOrder): List<Track> = songsIn(order).map { it.track }
+
+    /** Folders as the songs stand: by their names, or by the newest song in each (and under it). */
+    fun foldersIn(nodes: List<FolderNode>, order: ListOrder): List<FolderNode> = nodes.inOrder(
+        order,
+        OrderBy(
+            name = { it.name },
+            added = { n -> under(n.path).maxOfOrNull { it.addedAt } ?: 0L },
+            modified = { n -> under(n.path).maxOfOrNull { it.modifiedAt } ?: 0L },
+        ),
+    )
+
     /** The whole of it, as one playlist. */
     val allCard: PhoneCard get() = PhoneCard(
         preview(rootKey, "On this phone", when {
@@ -98,6 +122,9 @@ internal class PhoneMusic(
 }
 
 private const val KeptKey = "folder:kept"
+
+/** The phone's songs: their names, artists, albums and lengths, and when their files came and last changed. */
+private val PhoneOrder = OrderBy.songs<PhoneSong>({ it.track }, added = { it.addedAt }, modified = { it.modifiedAt })
 
 /** Reads the phone's music for a screen: asked for once, then it keeps itself up to date. */
 @Composable
@@ -165,15 +192,19 @@ private fun ChooseFolders() {
 }
 
 /** The Library's shelf of the phone's own music. */
-internal fun LazyListScope.phoneShelf(music: PhoneMusic) {
+internal fun LazyListScope.phoneShelf(music: PhoneMusic, ordering: Ordering) {
     when {
         !music.allowed -> item { AllowMusic(music) }
         !music.scanned -> item { Loading() }
         else -> {
-            if (music.phoneTracks.isNotEmpty()) item { PlayRow(music.phoneTracks) }
-            folderGrid(foldersInside("", music.chosen).map(music::card))
+            val tracks = music.tracksIn(ordering.order)
+            if (tracks.isNotEmpty()) {
+                item { PlayRow(tracks) }
+                item(key = "order:phone") { OrderKey(ordering, Modifier.padding(bottom = 6.dp)) }
+            }
+            folderGrid(music.foldersIn(foldersInside("", music.chosen), ordering.order).map(music::card))
             item { ChooseFolders() }
-            if (music.phoneTracks.isNotEmpty()) item { TrackList(music.phoneTracks, playContext = music.phoneTracks) }
+            if (tracks.isNotEmpty()) item { TrackList(tracks, playContext = tracks) }
         }
     }
 }
@@ -192,11 +223,18 @@ fun OnThisPhoneScreen(path: String) {
     val here = FolderSelection.normalize(path)
     val root = here.isEmpty()
     val name = if (root) "On this phone" else here.removeSuffix("/").substringAfterLast('/')
-    val tracks = remember(music, here) { if (root) music.all else music.under(here).map { it.track } }
-    val songsHere = remember(music, here) { music.songs.filter { it.folder == here }.map { it.track } }
-    val cards = remember(music, here) { buildList { if (root && music.kept.isNotEmpty()) add(music.keptCard); foldersInside(here, music.chosen).forEach { add(music.card(it)) } } }
-    val preview = actions.preview?.takeIf { it.key == "folder:phone:$here" }
-    val landed = pageLanded()
+    // One order for the phone's music, its shelf and every folder's page; the kept songs' folder stays first.
+    val ordering = rememberOrdering("phone", ListOrder.PhoneSongs)
+    val order = ordering.order
+    val tracks = remember(music, here, order) {
+        if (root) (music.kept + music.tracksIn(order)).distinctBy { it.id } else music.songsIn(order).filter { it.folder.startsWith(here) }.map { it.track }
+    }
+    val songsHere = remember(music, here, order) { music.songsIn(order).filter { it.folder == here }.map { it.track } }
+    val cards = remember(music, here, order) {
+        buildList { if (root && music.kept.isNotEmpty()) add(music.keptCard); music.foldersIn(foldersInside(here, music.chosen), order).forEach { add(music.card(it)) } }
+    }
+    val preview = folderPreview("folder:phone:$here")
+    val staged = rememberStagedRows()
     LazyColumn(Modifier.fillMaxSize(), state = rememberPageListState(), contentPadding = PaddingValues(bottom = 0.dp)) {
         item { BackLine() }
         item(key = "head") {
@@ -207,7 +245,9 @@ fun OnThisPhoneScreen(path: String) {
                 preview?.files ?: tracks.take(3).map { FolderFile(it.title, it.artwork) },
             ) { if (tracks.isNotEmpty()) PlayRow(tracks) }
         }
-        if (!landed) return@LazyColumn
+        // Made a row a frame while the page arrives (a row of two folders counts as one), shown once it has.
+        val n = staged.value
+        if (n <= 0) return@LazyColumn
         when {
             root && !music.allowed && music.kept.isEmpty() -> item { AllowMusic(music) }
             !music.scanned -> item { Loading() }
@@ -216,13 +256,17 @@ fun OnThisPhoneScreen(path: String) {
                 if (root) item { ChooseFolders() }
             }
             else -> {
-                folderGrid(cards)
+                val folderRows = (cards.size + 1) / 2
+                if (songsHere.size > 1 || cards.size > 1) item(key = "order") { OrderKey(ordering, Modifier.padding(top = 10.dp, bottom = 24.dp)) }
+                folderGrid(cards.take(n.coerceAtMost(Int.MAX_VALUE / 2) * 2))
+                if (n != Int.MAX_VALUE && n <= folderRows) return@LazyColumn
                 if (root && !music.allowed) item { AllowMusic(music) }
                 if (root && music.allowed) item { ChooseFolders() }
-                sleeveTracks(songsHere, playing = playback.current?.id, isPlaying = playback.isPlaying, keyPrefix = "t") { i -> actions.play(songsHere, i) }
+                val left = if (n == Int.MAX_VALUE) Int.MAX_VALUE else n - folderRows
+                sleeveTracks(songsHere.take(left), playing = playback.current?.id, isPlaying = playback.isPlaying, keyPrefix = "t") { i -> actions.play(songsHere, i) }
             }
         }
-        item(key = "colophon") { Colophon() }
+        if (n == Int.MAX_VALUE) item(key = "colophon") { Colophon() }
     }
 }
 
@@ -233,9 +277,11 @@ fun KeptScreen() {
     val actions = LocalActions.current
     val entries by container.downloads.entries.collectAsStateWithLifecycle()
     val playback by container.playback.state.collectAsStateWithLifecycle()
-    val kept = remember(entries) { entries.values.filter { it.status == Downloads.Status.Kept }.map { it.track } }
-    val preview = actions.preview?.takeIf { it.key == KeptKey }
-    val landed = pageLanded()
+    // Shared with the Library's Kept: one list, one order.
+    val ordering = rememberOrdering("kept", ListOrder.Songs)
+    val kept = remember(entries, ordering.order) { entries.values.filter { it.status == Downloads.Status.Kept }.map { it.track }.inOrder(ordering.order, OrderBy.Songs) }
+    val preview = folderPreview(KeptKey)
+    val staged = rememberStagedRows()
     LazyColumn(Modifier.fillMaxSize(), state = rememberPageListState(), contentPadding = PaddingValues(bottom = 0.dp)) {
         item { BackLine() }
         item(key = "head") {
@@ -246,9 +292,13 @@ fun KeptScreen() {
                 preview?.files ?: kept.take(3).map { FolderFile(it.title, it.artwork) },
             ) { if (kept.isNotEmpty()) PlayRow(kept) }
         }
-        if (!landed) return@LazyColumn
+        val n = staged.value
+        if (n <= 0) return@LazyColumn
         if (kept.isEmpty()) item { Notice("Nothing kept yet", "Hold a song and choose Keep on this phone. Kept songs play without a connection.") }
-        else sleeveTracks(kept, playing = playback.current?.id, isPlaying = playback.isPlaying, keyPrefix = "t") { i -> actions.play(kept, i) }
-        item(key = "colophon") { Colophon() }
+        else {
+            if (kept.size > 1) item(key = "order") { OrderKey(ordering, Modifier.padding(top = 10.dp, bottom = 30.dp)) }
+            sleeveTracks(kept.take(n), playing = playback.current?.id, isPlaying = playback.isPlaying, keyPrefix = "t") { i -> actions.play(kept, i) }
+        }
+        if (n == Int.MAX_VALUE) item(key = "colophon") { Colophon() }
     }
 }

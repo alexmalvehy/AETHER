@@ -1,5 +1,10 @@
 package app.aether
 
+import app.aether.sources.canvas.CommunityCanvas
+import app.aether.sources.canvas.CanvasHttp
+import app.aether.sources.canvas.CanvasChain
+import app.aether.core.model.CanvasProvider
+import app.aether.ui.player.isVideo
 import app.aether.output.LosslessOutput
 import android.app.Application
 import android.app.PendingIntent
@@ -20,7 +25,6 @@ import app.aether.player.PlaybackConnection
 import app.aether.core.data.EqualiserStore
 import app.aether.core.model.EqProfile
 import app.aether.core.data.PlaylistSnapshots
-import app.aether.player.CastManager
 import app.aether.player.PlaybackEnvironment
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -73,6 +77,7 @@ import app.aether.sources.apple.AppleArt
 import app.aether.sources.apple.ArtHttp
 import kotlinx.coroutines.launch
 import app.aether.update.UpdateCenter
+import app.aether.transfer.Transfer
 
 /** Everything the app is made of, built once. Screens reach it through `LocalContainer`. */
 class Container(app: Application) {
@@ -113,9 +118,10 @@ class Container(app: Application) {
 
     /** Whether the phone can reach the internet now. */
     val online = Online(app)
-    val accountPlaylists by lazy { AccountPlaylists(app, scope, account, sources, library, online) }
-    val favoritesSync by lazy { YouTubeFavoritesSync(app, scope, account, online, youtube, library) }
-    val cast: CastManager by lazy { CastManager(app, scope, app as? PlaybackEnvironment).also { it.initialize() } }
+    val accountPlaylists by lazy { AccountPlaylists(app, scope, account, sources, library, online, linked = { playlistSync.linkedRemotes() }) }
+
+    /** Playlists and Liked songs kept in step with the listener's YouTube Music account, each while its sync key is on. */
+    val playlistSync by lazy { PlaylistSync(app, scope, account, sources, library, online) }
     val playback = PlaybackConnection(app, scope)
 
     /**
@@ -126,8 +132,11 @@ class Container(app: Application) {
         app,
         scope,
         lyricsOf = { t ->
-            val answer = lyrics.lyrics(LyricsRequest(t.id.toString(), t.title, t.artistLine, t.album?.title, t.durationMs))
-            (answer as? LyricsResult.Found)?.lyrics?.let(LrcWriter::write)
+            // A video is kept without words, as it plays without them.
+            if (t.isVideo) null else {
+                val answer = lyrics.lyrics(LyricsRequest(t.id.toString(), t.title, t.artistLine, t.album?.title, t.durationMs))
+                (answer as? LyricsResult.Found)?.lyrics?.let(LrcWriter::write)
+            }
         },
         coverOf = { t ->
             // Asked once, a moment's blip would leave the file without its cover for good: the full size
@@ -154,6 +163,9 @@ class Container(app: Application) {
     /** AETHER's own updates, from its GitHub releases (PODIUM's update check), off the main thread. */
     val updates: UpdateCenter = UpdateCenter.of(app, CoroutineScope(SupervisorJob() + Dispatchers.IO))
 
+    /** Playlists in and out: files, public playlists' links, AETHER's own file (core:transfer). */
+    val transfer by lazy { Transfer(app, scope, library, sources, local, http, online) { updates.version } }
+
     /** Whether a lossless-capable output is connected, for addons that ask for one (BitChord's test). */
     val losslessOutput = LosslessOutput.also { it.init(app) }
 
@@ -169,7 +181,7 @@ class Container(app: Application) {
      * back and every two minutes after, never left out for the rest of the session.
      */
     fun reconnectAddons() {
-        scope.launch {
+        scope.launch(Dispatchers.IO) {
             if (!reconnecting.tryLock()) return@launch
             try {
                 settings.addons.value.filter { sources.of(AddonSource.idFor(it)) == null }.forEach { address ->
@@ -210,14 +222,41 @@ class Container(app: Application) {
     /** An album's film and the lettering of who made it, on the same terms. */
     val albumArt: AlbumArtProvider = appleArt
 
+    /**
+     * A song's moving cover: Apple Music's motion artwork (asked only with the listener's consent), then
+     * the community's index of looping covers (fetched whole and matched on the phone: nothing is sent).
+     */
+    val canvases: CanvasProvider = CanvasChain(
+        appleCached = appleArt::cachedSongFilm,
+        apple = appleArt::findSongFilm,
+        community = CommunityCanvas(
+            CanvasHttp { url ->
+                try {
+                    withContext(Dispatchers.IO) {
+                        http.newCall(Request.Builder().url(url).header("User-Agent", UserAgent).build()).execute().use {
+                            if (it.isSuccessful) it.body?.string() else null
+                        }
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+            },
+        ),
+    )
+
     /** Lyrics libraries are asked quickly: words that come after the second chorus are no use to anyone. */
     private val lyricsHttp: LyricsHttp = object : LyricsHttp {
         private val client = http.newBuilder().callTimeout(6, TimeUnit.SECONDS).connectTimeout(4, TimeUnit.SECONDS).build()
         override suspend fun get(url: String): Pair<Int, String> = reply(url).let { it.code to it.body }
         override suspend fun reply(url: String): LyricsHttp.Reply {
             val request = Request.Builder().url(url).header("User-Agent", UserAgent).header("Accept", "application/json, text/xml, */*").build()
-            return client.newCall(request).await().use { r ->
-                LyricsHttp.Reply(r.code, r.body?.string().orEmpty(), r.header("Retry-After")?.toLongOrNull())
+            // Lyrics are asked from the screen: the answer is read on the I/O threads, not the main one.
+            return withContext(Dispatchers.IO) {
+                client.newCall(request).await().use { r ->
+                    LyricsHttp.Reply(r.code, r.body?.string().orEmpty(), r.header("Retry-After")?.toLongOrNull())
+                }
             }
         }
     }
@@ -262,9 +301,12 @@ class AetherApp : Application(), PlaybackEnvironment, SingletonImageLoader.Facto
         CrashNote.keep(this)
         container = Container(this)
         keepCoversOffline()
+        container.playlistSync.start()
         container.accountPlaylists.start()
-        container.favoritesSync.start()
-        container.cast
+        // Casting: the TVs on this Wi-Fi can be listed from the first screen, and AETHER's own receiver is
+        // kept told what's playing.
+        app.aether.player.cast.CastController.ensureStarted(this)
+        app.aether.cast.CastStage(this, container).start(container.scope)
     }
 
     /**
@@ -301,6 +343,15 @@ class AetherApp : Application(), PlaybackEnvironment, SingletonImageLoader.Facto
     override val http: OkHttpClient get() = container.http
     override val equaliser: StateFlow<EqProfile?> get() = container.equaliser.shaping
     override val crossfadeSeconds: StateFlow<Int> get() = container.settings.crossfade
+    override val automix: StateFlow<Boolean> get() = container.settings.automix
+    override val replayGain: StateFlow<Int> get() = container.settings.replayGain
+    override val bitPerfect: StateFlow<Boolean> get() = container.settings.bitPerfect
+    override suspend fun suggestionsAfter(track: Track): List<Track> {
+        val source = container.sources.of(track.id) ?: return emptyList()
+        // Its radio, whatever it was chosen from: what follows a song, not the rest of its list.
+        val next = source.upNext(track.copy(context = null)) as? Outcome.Ok ?: return emptyList()
+        return next.value.tracks.filter { it.id != track.id }
+    }
     override val lateCopies: kotlinx.coroutines.flow.Flow<MediaId> get() = container.sources.lateCopies
     override fun lateCopy(id: MediaId): Stream? = container.sources.lateCopy(id)
     override fun hearingCopy(id: MediaId, hearing: Boolean) = if (hearing) container.sources.hearing(id) else container.sources.notHearing(id)
@@ -326,13 +377,7 @@ class AetherApp : Application(), PlaybackEnvironment, SingletonImageLoader.Facto
         return next
     }
 
-    override suspend fun startRadio(track: Track): List<Track> {
-        val source = container.sources.of(track.id) ?: container.sources.primary
-        return (source.upNext(track.copy(context = null)) as? Outcome.Ok)?.value?.tracks.orEmpty()
-    }
-
-    override val castManager: app.aether.player.CastManager
-        get() = container.cast
+    override fun widgetsChanged() = app.aether.widget.MediaWidget.refresh(this)
 
     override fun sessionActivity(): PendingIntent? = PendingIntent.getActivity(
         this,

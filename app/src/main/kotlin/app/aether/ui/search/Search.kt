@@ -91,6 +91,7 @@ import app.aether.ui.common.LocalContainer
 import app.aether.ui.common.SectionBlock
 import app.aether.ui.common.TrackList
 import app.aether.ui.common.rememberLoad
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import android.os.Build
@@ -410,7 +411,8 @@ private fun SuggestionList(suggestions: Suggestions?, onQuery: (String) -> Unit)
         }
         suggestions.items.takeIf { it.isNotEmpty() }?.let { items ->
             Spacer(Modifier.height(16.dp))
-            items.forEach { item ->
+            // Songs first here too, as in the results; otherwise in the catalogue's order.
+            items.sortedBy { if (it is Track && it.kind == MediaKind.SONG) 0 else 1 }.forEach { item ->
                 when (item) {
                     is Track -> app.aether.core.designsystem.component.TrackRow(item, onClick = { actions.play(listOf(item)) }, onLongClick = { actions.openMenu(item) })
                     else -> EntityLine(item, onClick = { actions.open(item) })
@@ -446,15 +448,48 @@ private fun EntityLine(entity: MediaEntity, onClick: () -> Unit) {
     }
 }
 
-/** Results, grouped by what they are, under the catalogue's own filters. */
+/**
+ * What a search found: the catalogue's results, and its songs alone, asked for at the same moment
+ * because the mixed results hold only a few songs, and songs come first.
+ */
+private data class Found(val results: SearchResults, val songs: List<Track>, val moreSongs: app.aether.core.model.PageToken?)
+
+/** Songs shown before "More songs": enough to choose from, few enough that what follows is near (PODIUM, D-80). */
+private const val SongsAtFirst = 5
+
+/**
+ * Results under the catalogue's own filters: songs first, always (as in PODIUM and BitChord), then
+ * artists, albums, videos, playlists and podcasts. The catalogue's top result leads its own kind
+ * rather than standing above the songs.
+ */
 @Composable
 private fun Results(query: String, filter: String?, onFilter: (String?) -> Unit) {
     val container = LocalContainer.current
     val source = container.sources.primary
     var filters by remember(query) { mutableStateOf(emptyList<app.aether.core.model.SearchFilter>()) }
     val chosen = filters.firstOrNull { it.label == filter }
-    val (load, retry) = rememberLoad("search:$query:${chosen?.key}") { source.search(query, chosen) }
-    LaunchedEffect(load) { if (load is Load.Ready<SearchResults> && filters.isEmpty()) filters = load.value.filters }
+    val (load, retry) = rememberLoad("search:$query:${chosen?.key}") {
+        if (chosen != null) {
+            when (val r = source.search(query, chosen)) {
+                is app.aether.core.model.Outcome.Ok -> app.aether.core.model.Outcome.Ok(Found(r.value, emptyList(), null))
+                is app.aether.core.model.Outcome.Err -> r
+            }
+        } else {
+            kotlinx.coroutines.coroutineScope {
+                val typed = async { source.searchSongs(query) }
+                val mixed = source.search(query, null)
+                val songs = (typed.await() as? app.aether.core.model.Outcome.Ok)?.value
+                when (mixed) {
+                    is app.aether.core.model.Outcome.Ok -> app.aether.core.model.Outcome.Ok(Found(mixed.value, songs?.items.orEmpty(), songs?.next))
+                    // The songs alone still answer a search whose mixed half didn't.
+                    is app.aether.core.model.Outcome.Err ->
+                        if (songs != null && songs.items.isNotEmpty()) app.aether.core.model.Outcome.Ok(Found(SearchResults(emptyList(), emptyList(), null), songs.items, songs.next))
+                        else mixed
+                }
+            }
+        }
+    }
+    LaunchedEffect(load) { if (load is Load.Ready<Found> && filters.isEmpty()) filters = load.value.results.filters }
 
     Column(Modifier.fillMaxWidth().padding(top = 18.dp)) {
         if (filters.isNotEmpty()) {
@@ -475,28 +510,54 @@ private fun Results(query: String, filter: String?, onFilter: (String?) -> Unit)
             Load.Loading -> Loading()
             is Load.Failed -> Notice(load.title, load.body, action = "Try again", onAction = retry)
             is Load.Ready -> {
-                val items = load.value.items
-                if (items.isEmpty()) {
+                val found = load.value
+                val items = found.results.items
+                // The mixed results' songs are the catalogue's best guesses and lead; the songs asked
+                // for alone fill in after them, and fill in what the mixed results left out.
+                val listed = remember(found) { listedSongs(items, found.songs) }
+                var opened by remember(found) { mutableStateOf(chosen != null) }
+                var further by remember(found) { mutableStateOf(emptyList<Track>()) }
+                var next by remember(found) { mutableStateOf(found.moreSongs) }
+                var asking by remember(found) { mutableStateOf(false) }
+                val scope = rememberCoroutineScope()
+                if (items.isEmpty() && listed.isEmpty()) {
                     Notice("Nothing by that name", "Try fewer words, or another spelling.")
                 } else {
-                    val top = items.first()
-                    val songs = items.filterIsInstance<Track>().filter { it.kind == MediaKind.SONG }
+                    val songs = (listed + further).distinctBy { it.id }
                     val videos = items.filterIsInstance<Track>().filter { it.kind == MediaKind.MUSIC_VIDEO || it.kind == MediaKind.VIDEO }
                     val episodes = items.filterIsInstance<Track>().filter { it.kind == MediaKind.EPISODE }
                     val artists = items.filterIsInstance<Artist>()
                     val albums = items.filterIsInstance<Album>()
                     val playlists = items.filterIsInstance<Playlist>()
                     val podcasts = items.filterIsInstance<Podcast>()
-                    if (top !is Track) {
-                        Column(Modifier.fillMaxWidth().padding(top = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Strapline("Top result")
-                            Spacer(Modifier.height(18.dp))
-                            EntityCard(top)
-                        }
-                    }
                     // A song chosen from the results brings its own radio: what follows is what's like
                     // it, never the other songs that happen to share its name.
-                    if (songs.isNotEmpty()) { Group("Songs"); TrackList(songs.take(8), alone = true) }
+                    if (songs.isNotEmpty()) {
+                        Group("Songs")
+                        TrackList(if (opened) songs else songs.take(SongsAtFirst), alone = true)
+                        // First the songs already found, then the catalogue's further pages of them.
+                        val more = !opened && songs.size > SongsAtFirst || opened && next != null
+                        if (more) {
+                            Spacer(Modifier.height(14.dp))
+                            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                GlassPill(if (asking) "Finding more" else "More songs", small = true, onClick = {
+                                    if (!opened) {
+                                        opened = true
+                                    } else if (!asking) {
+                                        val token = next ?: return@GlassPill
+                                        asking = true
+                                        scope.launch {
+                                            (source.searchSongs(query, token) as? app.aether.core.model.Outcome.Ok)?.value?.let { page ->
+                                                further = further + page.items.filter { it.kind == MediaKind.SONG }
+                                                next = page.next
+                                            }
+                                            asking = false
+                                        }
+                                    }
+                                })
+                            }
+                        }
+                    }
                     if (artists.isNotEmpty()) { Group("Artists"); CardRow(artists) }
                     if (albums.isNotEmpty()) { Group("Albums"); CardRow(albums) }
                     if (videos.isNotEmpty()) { Group("Videos"); CardRow(videos, wide = true) }

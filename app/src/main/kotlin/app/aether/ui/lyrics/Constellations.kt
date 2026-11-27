@@ -2,6 +2,7 @@
 
 package app.aether.ui.lyrics
 
+import app.aether.ui.player.isVideo
 import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
 import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -70,11 +71,7 @@ import app.aether.core.designsystem.theme.Ink
 import app.aether.core.designsystem.theme.Sans
 import app.aether.core.designsystem.theme.Serif
 import app.aether.core.designsystem.theme.Type
-import app.aether.core.lyrics.Lyrics
-import app.aether.core.lyrics.LyricsFormatter
 import app.aether.core.lyrics.LyricsLine
-import app.aether.core.lyrics.LyricsRequest
-import app.aether.core.lyrics.LyricsResult
 import app.aether.core.lyrics.WordTiming
 import app.aether.core.model.Track
 import app.aether.ui.common.Load
@@ -92,58 +89,14 @@ import app.aether.core.designsystem.component.GlassPill
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** What the lyrics view has to show. */
-private sealed interface Words {
-    data object Waiting : Words
-    data class Timed(val lines: List<LyricsLine>, val estimated: Boolean, val credit: String) : Words
-    data class Untimed(val lines: List<String>, val credit: String) : Words
-    data object Instrumental : Words
-    data class Silent(val title: String, val body: String) : Words
-}
-
-private fun shape(lyrics: Lyrics, credit: String): Words = when (lyrics) {
-    is Lyrics.Synced -> Words.Timed(lyrics.lines, lyrics.estimated, credit)
-    is Lyrics.Plain -> Words.Untimed(lyrics.lines, credit)
-    Lyrics.Instrumental -> Words.Instrumental
-}
-
-/**
- * The song's words: timed ones from LRCLIB (on unless the listener turned it off, on the welcome or
- * in Settings), otherwise (or when it has none) the music service's own words, paced across the
- * song and marked as estimated. Nothing is asked here: the choice lives in Settings.
- */
+/** The song's words, as the lyrics view finds them ([wordsFor]), asked again when the consent changes. */
 @Composable
 private fun rememberWords(track: Track): Words {
     val container = LocalContainer.current
     val consent by container.settings.timedLyrics.collectAsStateWithLifecycle()
-    val service = rememberLyrics(track)
+    val service = rememberLyrics(track, fetch = !track.isVideo)
     val result by produceState<Words>(Words.Waiting, track.id, consent, service) {
-        // A song on the phone brings its own words first: its .lrc beside it, or the words in its file.
-        val onPhone = track.id.source == container.local.id
-        if (onPhone) container.localLyrics.of(track)?.let { found ->
-            value = shape(LyricsFormatter.forPlayback(found.lyrics, track.durationMs), found.credit)
-            return@produceState
-        }
-        val request = LyricsRequest(key = track.id.toString(), title = track.title, artist = track.artistLine, album = track.album?.title, durationMs = track.durationMs)
-        val answer = container.lyrics.lyrics(request)
-        // A kept song, offline or unanswered: the words it was kept with.
-        if (!onPhone && answer !is LyricsResult.Found) container.localLyrics.of(track)?.let { found ->
-            value = shape(LyricsFormatter.forPlayback(found.lyrics, track.durationMs), found.credit)
-            return@produceState
-        }
-        val own: Words? = (service as? Load.Ready)?.value?.let { l ->
-            val lines = l.text.lines().map { it.trim() }.filter { it.isNotEmpty() }
-            if (lines.isEmpty()) null else shape(LyricsFormatter.forPlayback(Lyrics.Plain(lines), track.durationMs), l.source ?: "YouTube Music")
-        }
-        val missing = if (service is Load.Loading) Words.Waiting else null
-        value = when (answer) {
-            is LyricsResult.Found -> shape(answer.lyrics, answer.provider.name)
-            LyricsResult.NeedsConsent -> own ?: missing ?: Words.Silent("No words yet", "Timed lyrics are off. Turn them on in Settings to ask LRCLIB, an open library of lyrics.")
-            LyricsResult.NotFound -> own ?: missing ?: Words.Silent("No words for this one", "Neither LRCLIB nor the music service has lyrics for this song.")
-            LyricsResult.Offline -> own ?: missing ?: Words.Silent("Offline", "Lyrics need a connection the first time.")
-            LyricsResult.Failed -> own ?: missing ?: Words.Silent("No answer", "The lyrics service didn't answer. Try again in a while.")
-            is LyricsResult.RateLimited -> own ?: missing ?: Words.Silent("Asked too often", "LRCLIB asked for a pause; it'll be asked again shortly.")
-        }
+        value = wordsFor(container, track, (service as? Load.Ready)?.value, ownPending = service is Load.Loading)
     }
     return result
 }
@@ -158,13 +111,14 @@ private fun rememberWords(track: Track): Words {
  * the listener chooses in Settings, the song is written by hand as one line ([ContinuousLine]).
  */
 @Composable
-fun LyricsStage(track: Track, pane: DragState) {
+fun LyricsStage(track: Track, pane: DragState, following: androidx.compose.runtime.MutableState<Boolean> = remember { androidx.compose.runtime.mutableStateOf(true) }) {
     val container = LocalContainer.current
     val words = rememberWords(track)
     val position = container.playback.position.collectAsStateWithLifecycle()
     val playback by container.playback.state.collectAsStateWithLifecycle()
     val style by container.settings.lyricsStyle.collectAsStateWithLifecycle()
     val romanise by container.settings.romanise.collectAsStateWithLifecycle()
+    val latinFirst by container.settings.latinFirst.collectAsStateWithLifecycle()
     val asLine = style == 1
     val asVerse = style == 2
     val positionNow = remember(container) { { container.playback.positionNow() } }
@@ -198,6 +152,8 @@ fun LyricsStage(track: Track, pane: DragState) {
                         positionNow,
                         playback.isPlaying,
                         onSeek = { container.playback.seekTo(it) },
+                        onFollowing = { following.value = it },
+                        latinFirst = latinFirst,
                         modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility).padding(top = 44.dp),
                     )
                     // The page goes into the black under the song's name and above its credit, as a page under glass.
@@ -206,7 +162,11 @@ fun LyricsStage(track: Track, pane: DragState) {
                 }
                 else -> Constellations(words.lines, if (shownGlosses.isEmpty()) null else Romaniser.japanese(words.lines.map { it.text }), position, playback.isPlaying, Modifier.fillMaxSize())
             }
-            is Words.Untimed -> Untimed(words.lines, Modifier.fillMaxSize())
+            is Words.Untimed -> {
+                // Words with no times are a page read by hand: it scrolls before the pane goes.
+                androidx.compose.runtime.SideEffect { following.value = false }
+                Untimed(words.lines, Modifier.fillMaxSize())
+            }
             Words.Instrumental -> if (asLine) {
                 // A song without words is drawn too: one composition across it.
                 val script = remember(track.durationMs) { LineScript.instrumental(track.durationMs) }

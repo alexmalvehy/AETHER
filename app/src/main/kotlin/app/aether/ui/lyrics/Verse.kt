@@ -25,6 +25,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.MutableLongState
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
@@ -106,6 +109,12 @@ private val BackingLeading = 29.sp
 
 /** Latin letters under a line in another script: the serif's italic, as an aside is. */
 private val GlossStyle = TextStyle(fontFamily = Serif, fontStyle = FontStyle.Italic, fontWeight = FontWeight.W500, fontSize = 20.sp, lineHeight = 25.sp)
+
+/**
+ * Latin letters first: the words in their own script under their Latin letters, at the aside's size
+ * but upright (a script with no italic of its own would only be slanted).
+ */
+private val OriginalStyle = TextStyle(fontFamily = Serif, fontWeight = FontWeight.W500, fontSize = 20.sp, lineHeight = 26.sp)
 
 /** What the words not yet sung of a line are held back to, so that a sung word reads at a glance. */
 private const val UnsungAlpha = 0.45f
@@ -194,10 +203,25 @@ internal fun Verse(
     playing: Boolean,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    /** Whether the page is following the song (true) or being read by hand (false). */
+    onFollowing: (Boolean) -> Unit = {},
+    /** The Latin letters sung as the lines, word by word, with the words in their own script beneath. */
+    latinFirst: Boolean = false,
 ) {
     val reduce = LocalReduceMotion.current
     val rows = remember(lines) { VLine.of(lines) }
     val reveal = rememberGlossReveal(lines, glosses)
+    // Latin letters first: each line's own timed words given in Latin letters, worked out once for the
+    // song, off the main thread; a line with none (or the setting off) keeps its own words as its line.
+    val shownGlosses = reveal.glosses
+    val latinRows by produceState(emptyList<VLine?>(), rows, shownGlosses, latinFirst) {
+        value = if (!latinFirst || shownGlosses.isEmpty()) emptyList() else withContext(Dispatchers.Default) {
+            val japanese = Romaniser.japanese(lines.map { it.text })
+            rows.map { row ->
+                shownGlosses.getOrNull(row.origin)?.takeIf { it.isNotBlank() }?.let { whole -> VLine.latin(row, whole) { Romaniser.romanise(it, japanese) } }
+            }
+        }
+    }
     val clock = rememberVerseClock(rows, positionNow, playing)
     // Only a song that names a second voice is laid out as a duet.
     val duet = remember(rows) { rows.any { it.alignEnd } }
@@ -221,6 +245,7 @@ internal fun Verse(
     var browsing by remember(rows) { mutableStateOf(false) }
     var placed by remember(rows) { mutableStateOf(false) }
 
+    LaunchedEffect(browsing) { onFollowing(!browsing) }
     // A finger on the page suspends the following, and nothing else.
     LaunchedEffect(list) {
         list.interactionSource.interactions.collect { if (it is DragInteraction.Start) browsing = true }
@@ -290,11 +315,15 @@ internal fun Verse(
                 if (line.isGap) {
                     Gap(line, rows.getOrNull(i + 1)?.timeMs ?: line.endMs, isActive, clock, { lineAlpha }, defocus, onSeek)
                 } else {
-                    val gloss = reveal.glosses.getOrNull(line.origin)?.takeIf { it.isNotBlank() }?.let { text -> remember(line, text) { VLine.gloss(text, line) } }
+                    // Latin first, the Latin letters are the line and its own words go beneath it, lit as they are.
+                    val latin = latinRows.getOrNull(i)
+                    val gloss = if (latin != null) remember(latin) { VLine.gloss(line.text, latin) }
+                    else reveal.glosses.getOrNull(line.origin)?.takeIf { it.isNotBlank() }?.let { text -> remember(line, text) { VLine.gloss(text, line) } }
                     VerseRow(
                         index = i,
-                        line = line,
+                        line = latin ?: line,
                         gloss = gloss,
+                        glossStyle = if (latin != null) OriginalStyle else GlossStyle,
                         glossOpen = reveal.progress,
                         clock = clock,
                         isActive = isActive,
@@ -458,6 +487,7 @@ private fun VerseRow(
     index: Int,
     line: VLine,
     gloss: VLine?,
+    glossStyle: TextStyle,
     glossOpen: State<Float>,
     clock: MutableLongState,
     isActive: Boolean,
@@ -522,7 +552,7 @@ private fun VerseRow(
         Voice(line, clock, style, isActive, sung, browsing, glow, GlowRoom, alignEnd, rise = !reduce, Modifier.fillMaxWidth())
         gloss?.let { g ->
             Voice(
-                g, clock, GlossStyle.copy(textAlign = style.textAlign), isActive, sung, browsing, 0f, 0.dp, alignEnd, rise = false,
+                g, clock, glossStyle.copy(textAlign = style.textAlign), isActive, sung, browsing, 0f, 0.dp, alignEnd, rise = false,
                 Modifier
                     .fillMaxWidth()
                     .revealBelow(glossOpen)

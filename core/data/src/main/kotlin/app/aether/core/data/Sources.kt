@@ -221,7 +221,10 @@ class Settings(context: Context) {
     private val _songOrders = MutableStateFlow(
         prefs.getStringSet(SONG_ORDERS, emptySet()).orEmpty().mapNotNull { e -> e.substringBeforeLast('=', "").takeIf { it.isNotEmpty() }?.let { it to e.substringAfterLast('=') } }.toMap(),
     )
-    /** How each playlist's songs stand, by the playlist's key; a playlist not here is in its own order. */
+    /**
+     * How each list stands, by the list's key: a playlist's ("local:12", "yt:…"), or one of the Library's
+     * ("playlists", "kept", "liked", "phone", "albums", "artists"). A list not here stands as it does at first.
+     */
     val songOrders: StateFlow<Map<String, String>> = _songOrders.asStateFlow()
     fun setSongOrder(playlist: String, order: String?) {
         val next = if (order == null) _songOrders.value - playlist else _songOrders.value + (playlist to order)
@@ -283,6 +286,11 @@ class Settings(context: Context) {
      */
     val romanise: StateFlow<Boolean> = _romanise.asStateFlow()
     fun setRomanise(on: Boolean) = set(ROMANISE, on, _romanise)
+
+    private val _latinFirst = flag(LATIN_FIRST, false)
+    /** In Verse, with [romanise] on: the Latin letters are sung as the line, and the words in their own script go beneath. */
+    val latinFirst: StateFlow<Boolean> = _latinFirst.asStateFlow()
+    fun setLatinFirst(on: Boolean) = set(LATIN_FIRST, on, _latinFirst)
 
     private val _artistArt = flag(ARTIST_ART, true)
 
@@ -352,9 +360,27 @@ class Settings(context: Context) {
     /** The name the listener gave their Profile, if they did. */
     val profileName: StateFlow<String?> = _profileName.asStateFlow()
 
+    private val _coverWords = flag(COVER_WORDS, true)
+    /** Now Playing's cover carries its song's words and details in small capitals (its tattoo); off, the cover alone. */
+    val coverWords: StateFlow<Boolean> = _coverWords.asStateFlow()
+    fun setCoverWords(on: Boolean) = set(COVER_WORDS, on, _coverWords)
+
+    private val _coverLight = flag(COVER_LIGHT, true)
+    /** The cover's colours as moving light behind Now Playing; off, black with the cover's faint glow, as it was. */
+    val coverLight: StateFlow<Boolean> = _coverLight.asStateFlow()
+    fun setCoverLight(on: Boolean) = set(COVER_LIGHT, on, _coverLight)
+
     private val _songVideo = flag(SONG_VIDEO, true)
     /** A song's cover plays its short film on Now Playing, where it has one. */
     val songVideo: StateFlow<Boolean> = _songVideo.asStateFlow()
+
+    private val _castLyrics = flag(CAST_LYRICS, false)
+    /**
+     * Casting to a TV that shows AETHER's own screen, the song's words come up full screen there as soon
+     * as the song does. Off, the TV opens on the song, and its remote's OK key brings the words up.
+     */
+    val castLyrics: StateFlow<Boolean> = _castLyrics.asStateFlow()
+    fun setCastLyrics(on: Boolean) = set(CAST_LYRICS, on, _castLyrics)
 
     private val _musicVideo = flag(MUSIC_VIDEO, false)
     /**
@@ -378,6 +404,31 @@ class Settings(context: Context) {
     /** Seconds the end of one song and the start of the next overlap; 0 is off. */
     val crossfade: StateFlow<Int> = _crossfade.asStateFlow()
     fun setCrossfade(seconds: Int) { prefs.edit().putInt(CROSSFADE, seconds).apply(); _crossfade.value = seconds }
+
+    private val _automix = flag(AUTOMIX, false)
+    /**
+     * Automix (BitChord's): each song measured (tempo, beats, phrases, key, voices) and run into the
+     * next as a DJ would, in time and in key where they allow, a crossfade where they don't. Off until
+     * the listener asks for it.
+     */
+    val automix: StateFlow<Boolean> = _automix.asStateFlow()
+    fun setAutomix(on: Boolean) = set(AUTOMIX, on, _automix)
+
+    private val _replayGain = MutableStateFlow(prefs.getInt(REPLAY_GAIN, 0))
+    /**
+     * ReplayGain (Gramophone's): each song brought to one loudness by the levels its own file carries.
+     * 0 off, 1 by song, 2 by album. Off until the listener asks for it.
+     */
+    val replayGain: StateFlow<Int> = _replayGain.asStateFlow()
+    fun setReplayGain(mode: Int) { prefs.edit().putInt(REPLAY_GAIN, mode).apply(); _replayGain.value = mode }
+
+    private val _bitPerfect = flag(BIT_PERFECT, false)
+    /**
+     * Lossless songs to a USB DAC untouched (BitChord's Android 14 bit-perfect output). The DAC then sets
+     * the volume, so it's the listener's choice, off until asked for.
+     */
+    val bitPerfect: StateFlow<Boolean> = _bitPerfect.asStateFlow()
+    fun setBitPerfect(on: Boolean) = set(BIT_PERFECT, on, _bitPerfect)
 
     private val _chartsCountry = MutableStateFlow(prefs.getString(CHARTS_COUNTRY, null))
     val chartsCountry: StateFlow<String?> = _chartsCountry.asStateFlow()
@@ -433,17 +484,24 @@ class Settings(context: Context) {
         const val ADDON_CHOICES = "addon_choices"
         const val LYRICS_SOURCES_OFF = "lyrics_sources_off"
         const val ROMANISE = "romanise"
+        const val LATIN_FIRST = "latin_first"
         const val LYRICS_FOLDERS = "lyrics_folders"
         const val ARTWORK = "artwork_treatment"
         const val ARTWORK_CYCLE = "artwork_cycle"
         const val LYRICS_STYLE = "lyrics_style"
         const val SONG_VIDEO = "song_video"
+        const val COVER_WORDS = "cover_words"
+        const val COVER_LIGHT = "cover_light"
+        const val CAST_LYRICS = "cast_lyrics"
         const val MUSIC_VIDEO = "music_video"
         const val CARD_SILVER = "card_silver"
         const val PROFILE_NAME = "profile_name"
         const val KEPT_COLLECTIONS = "kept_collections"
         const val CHARTS_COUNTRY = "charts_country"
         const val CROSSFADE = "crossfade"
+        const val AUTOMIX = "automix"
+        const val REPLAY_GAIN = "replay_gain"
+        const val BIT_PERFECT = "bit_perfect"
         const val SONG_ORDERS = "song_orders"
         const val FULL_SCREEN = "full_screen"
         const val SYNC_HISTORY = "sync_history"

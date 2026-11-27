@@ -25,7 +25,7 @@ import app.aether.core.designsystem.theme.Ink
  * hairline marks, its Fill for play, pause, skip and a liked heart: one family, drawn by one hand);
  * the rooms' own marks on the tab bar (Listen, Discover, Library) and the gear stay AETHER's.
  */
-enum class Glyph { Play, Pause, Next, Previous, Shuffle, Repeat, RepeatOne, Heart, HeartFilled, Queue, Lyrics, More, Down, Back, Search, Close, Plus, Check, Download, Listen, Discover, Library, Profile, Gear, Share, Video, Cast, Forward, Edit, Trash }
+enum class Glyph { Play, Pause, Next, Previous, Shuffle, Repeat, RepeatOne, Heart, HeartFilled, Queue, Lyrics, More, Down, Back, Search, Close, Plus, Minus, Check, Download, Listen, Discover, Library, Profile, Gear, Share, Video, Forward, Edit, Trash, Sleep, Cast, Sync, Sort }
 
 @Composable
 fun Icon(glyph: Glyph, modifier: Modifier = Modifier, size: Dp = 22.dp, color: Color = Ink.White, weight: Float = 1.4f) {
@@ -98,6 +98,17 @@ fun Icon(glyph: Glyph, modifier: Modifier = Modifier, size: Dp = 22.dp, color: C
             }
             Glyph.Close -> { line(6f, 6f, 18f, 18f); line(18f, 6f, 6f, 18f) }
             Glyph.Plus -> { line(12f, 5f, 12f, 19f); line(5f, 12f, 19f, 12f) }
+            Glyph.Minus -> line(5f, 12f, 19f, 12f)
+            // A crescent: most of one circle, cut by a larger one above it to the right.
+            Glyph.Sleep -> drawPath(
+                path {
+                    arcTo(androidx.compose.ui.geometry.Rect(4f * u, 4f * u, 20f * u, 20f * u), 13.7f, 242.6f, true)
+                    arcTo(androidx.compose.ui.geometry.Rect(9f * u, 1f * u, 23f * u, 15f * u), 212.6f, -155.2f, false)
+                    close()
+                },
+                color,
+                style = stroke,
+            )
             Glyph.Check -> drawPath(path { moveTo(5f * u, 12.5f * u); lineTo(10f * u, 17.5f * u); lineTo(19f * u, 7f * u) }, color, style = stroke)
             Glyph.Download -> {
                 line(12f, 4f, 12f, 15.5f)
@@ -139,6 +150,25 @@ fun Icon(glyph: Glyph, modifier: Modifier = Modifier, size: Dp = 22.dp, color: C
                 drawRoundRect(color, p(3f, 5.5f), Size(18f * u, 13f * u), androidx.compose.ui.geometry.CornerRadius(3f * u), style = stroke)
                 drawPath(path { moveTo(10f * u, 9f * u); lineTo(15.4f * u, 12f * u); lineTo(10f * u, 15f * u); close() }, color)
             }
+            Glyph.Cast -> {
+                // A screen, open at its lower left where the waves come in to it from their corner.
+                drawPath(
+                    path {
+                        moveTo(3f * u, 10f * u)
+                        lineTo(3f * u, 7.6f * u)
+                        quadraticTo(3f * u, 5f * u, 5.6f * u, 5f * u)
+                        lineTo(18.4f * u, 5f * u)
+                        quadraticTo(21f * u, 5f * u, 21f * u, 7.6f * u)
+                        lineTo(21f * u, 16.4f * u)
+                        quadraticTo(21f * u, 19f * u, 18.4f * u, 19f * u)
+                        lineTo(12.6f * u, 19f * u)
+                    },
+                    color,
+                    style = stroke,
+                )
+                for (r in listOf(4.4f, 8.4f)) drawArc(color, -90f, 90f, false, p(3f - r, 19f - r), Size(2 * r * u, 2 * r * u), style = stroke)
+                drawArc(color, -90f, 90f, true, p(3f - 1.7f, 19f - 1.7f), Size(3.4f * u, 3.4f * u))
+            }
             Glyph.Gear -> {
                 for (k in 0 until 8) rotate(k * 45f, p(12f, 12f)) {
                     drawRoundRect(color, p(10.4f, 2.6f), Size(3.2f * u, 4.2f * u), androidx.compose.ui.geometry.CornerRadius(0.8f * u))
@@ -158,11 +188,19 @@ fun Icon(glyph: Glyph, modifier: Modifier = Modifier, size: Dp = 22.dp, color: C
                 drawRoundRect(color, p(9.5f, 2.8f), Size(5f * u, 2.6f * u), androidx.compose.ui.geometry.CornerRadius(1f * u))
                 drawPath(path { moveTo(5.5f * u, 8.6f * u); lineTo(18.5f * u, 8.6f * u); lineTo(17.4f * u, 20.2f * u); quadraticTo(17.3f * u, 21f * u, 16.4f * u, 21f * u); lineTo(7.6f * u, 21f * u); quadraticTo(6.7f * u, 21f * u, 6.6f * u, 20.2f * u); close() }, color)
             }
-            Glyph.Cast -> {
-                drawPath(path { moveTo(3f * u, 9f * u); lineTo(3f * u, 6f * u); lineTo(21f * u, 6f * u); lineTo(21f * u, 19f * u); lineTo(14f * u, 19f * u) }, color, style = stroke)
-                drawCircle(color, 1.2f * u, p(4f, 18.5f))
-                drawArc(color, -90f, 90f, false, p(0f, 14.5f), Size(8f * u, 8f * u), style = stroke)
-                drawArc(color, -90f, 90f, false, p(-3.5f, 11f), Size(15f * u, 15f * u), style = stroke)
+            Glyph.Sync -> {
+                // Two arrows chasing each other round (Phosphor's arrows-clockwise is drawn in its place).
+                drawArc(color, 200f, 130f, false, p(5f, 5f), Size(14f * u, 14f * u), style = stroke)
+                drawArc(color, 20f, 130f, false, p(5f, 5f), Size(14f * u, 14f * u), style = stroke)
+            }
+            Glyph.Sort -> {
+                // One arrow down, one up (Phosphor's arrows-down-up is drawn in its place).
+                line(8f, 4.5f, 8f, 19.5f)
+                line(4.5f, 16f, 8f, 19.5f)
+                line(11.5f, 16f, 8f, 19.5f)
+                line(16f, 19.5f, 16f, 4.5f)
+                line(12.5f, 8f, 16f, 4.5f)
+                line(19.5f, 8f, 16f, 4.5f)
             }
         }
     }

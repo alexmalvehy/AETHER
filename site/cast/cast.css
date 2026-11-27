@@ -1,0 +1,513 @@
+/*
+ * AETHER on a TV: Now Playing, turned on its side. One composition on a 1920 x 1080 page, scaled to
+ * whatever the TV draws (1rem is 10 px at 1920 wide), and spaced by one measure, U = 7.2rem: the
+ * margins, the gutters, the gap under the name of the house, all of them U.
+ *
+ *   U  name of the house        |   |                          |   |                               (
+ *   U                           | U |                          | U |                             (
+ *      NOW PLAYING              |   |                          |   |                          (
+ *      3 of 11                  |   |      the print, 4:5      |   |      0:43                (   the dial,
+ *                               |   |     the full height      |   |     -2:51             (     standing on
+ *                               |   |                          |   |    [ key ]             (    the right
+ *      THE SONG                 |   |                          |   |                          (  edge
+ *      who made it              |   |                          |   |                             (
+ *   U  what the decoder heard   |   |                          |   |                               (
+ *
+ * The print runs from the top margin to the foot line; the dial, Now Playing's own turned to stand on
+ * the right edge as the phone's stands on its foot, is exactly as tall, its hand reaching the print's
+ * top and foot; the gap between them is U, as is the gap between the print and the song's column.
+ * Every size is the phone's at the dial's scale (0.249 rem to the phone's dp), so the TV reads as the
+ * phone does, only larger. Black, white and greys; the cover in its own colour; the red is the hand's.
+ */
+
+@font-face { font-family: 'Pinyon Script'; src: url(../assets/fonts/pinyon-script.woff2) format('woff2'); font-display: block; }
+@font-face { font-family: 'EB Garamond'; src: url(../assets/fonts/eb-garamond.woff2) format('woff2'); font-weight: 400 800; font-style: normal; font-display: block; }
+@font-face { font-family: 'EB Garamond'; src: url(../assets/fonts/eb-garamond-italic.woff2) format('woff2'); font-weight: 400 800; font-style: italic; font-display: block; }
+@font-face { font-family: 'Montserrat'; src: url(../assets/fonts/montserrat.woff2) format('woff2'); font-weight: 100 900; font-display: block; }
+
+:root {
+  --black: #000;
+  --white: #fff;
+  --grey: #9a9a9a;
+  --dim: #5e5e5e;
+  --signal: #ff3b30;
+  --script: 'Pinyon Script', serif;
+  --serif: 'EB Garamond', serif;
+  --sans: 'Montserrat', sans-serif;
+
+  --u: 7.2rem;              /* the one measure */
+  --foot: 100.8rem;         /* 108 less U: the line the song and the print stand on */
+  --print-left: 63.37rem;   /* U short of the dial's marks, at their nearest */
+  --print-w: 74.88rem;
+  --print-h: 93.6rem;       /* the top margin to the foot line, at 4:5 */
+  --column: 48.97rem;       /* the song's: from the margin to U short of the print */
+  --heart: 7.97rem;         /* from the right edge to where the dial's heart is set (26 dp from its pivot) */
+}
+
+html {
+  font-size: calc(100vw / 192);
+  background: var(--black);
+}
+
+body {
+  margin: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--black);
+  color: var(--white);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+  cursor: none;
+}
+
+/* Google's player plays the music, unseen. */
+cast-media-player {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 192rem;
+  height: 108rem;
+  overflow: hidden;
+  transform-origin: 50% 100%;
+}
+
+/* --- Far behind: the cover's light ------------------------------------------------------------- */
+
+.ground, .ground > *, .film, .film > * {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* A few dozen pixels of the cover, blurred once, stretched over the screen (Now Playing's SoftArt). */
+.soft { opacity: 0; }
+
+.shade { background: linear-gradient(to bottom, rgba(0, 0, 0, .2) 0%, rgba(0, 0, 0, .6) 50%, #000 100%); }
+
+/* --- The film: the whole screen, gone in arcs round the dial (Now Playing's FilmFade) ------------ */
+
+.film { opacity: 0; }
+.film video { object-fit: cover; }
+.film .under-name { background: linear-gradient(to bottom, rgba(0, 0, 0, .46) 0%, rgba(0, 0, 0, 0) 20%); }
+/* The song stands on it: the foot is darkened as the phone's is beneath its name. */
+.film .under-song { background: linear-gradient(to top, rgba(0, 0, 0, .74) 0%, rgba(0, 0, 0, .38) 20%, rgba(0, 0, 0, 0) 46%); }
+/* Rings round the dial's own centre: none of the film within the first, all of it past the last. */
+.film .round-dial {
+  background: radial-gradient(circle at 190.51rem 54rem,
+    #000 0, #000 50.5rem, rgba(0, 0, 0, .88) 63rem, rgba(0, 0, 0, .5) 75.4rem, rgba(0, 0, 0, .12) 87.9rem, rgba(0, 0, 0, 0) 100.3rem);
+}
+
+/* --- The song's column: the house, where the music is, and the song on the foot line ------------- */
+
+.mark {
+  position: absolute;
+  left: var(--u);
+  top: var(--u);
+  height: var(--u);
+  font-family: var(--script);
+  font-size: 6.4rem;
+  line-height: var(--u);
+  color: var(--white);
+}
+
+.heading {
+  position: absolute;
+  left: var(--u);
+  top: calc(var(--u) * 3);
+}
+
+.label {
+  font-family: var(--sans);
+  font-weight: 500;
+  font-size: 2.49rem;
+  line-height: 3.48rem;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--white);
+}
+
+.meta {
+  font-family: var(--serif);
+  font-size: 3.36rem;
+  line-height: 4.48rem;
+  color: var(--grey);
+  min-height: 4.48rem;
+}
+
+.song {
+  position: absolute;
+  left: var(--u);
+  width: var(--column);
+  bottom: calc(108rem - var(--foot));
+}
+
+.title {
+  margin: 0;
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 3.98rem;
+  line-height: 5.23rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  text-wrap: balance;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* MarkedLine's E: the song's own mark, beside its name. */
+.title .explicit {
+  display: inline-block;
+  margin-left: 1rem;
+  padding: 0 .6rem;
+  border: .14rem solid rgba(255, 255, 255, .55);
+  border-radius: .5rem;
+  font-size: 1.9rem;
+  line-height: 2.7rem;
+  letter-spacing: .02em;
+  vertical-align: .55rem;
+  color: rgba(255, 255, 255, .8);
+}
+
+.aside, .artist {
+  font-family: var(--serif);
+  color: var(--grey);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aside { margin-top: .5rem; font-size: 3.36rem; line-height: 4.48rem; }
+.aside:empty { display: none; }
+.artist { margin-top: 1.25rem; font-size: 3.86rem; line-height: 4.98rem; }
+
+/* What the decoder measured, as the phone says it: its parts three spaces apart. */
+.format {
+  margin-top: 1.74rem;
+  font-family: var(--sans);
+  font-weight: 500;
+  font-size: 2.49rem;
+  line-height: 3.48rem;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--dim);
+  white-space: pre;
+}
+
+.format:empty { display: none; }
+
+/* --- The print --------------------------------------------------------------------------------- */
+
+.print {
+  position: absolute;
+  left: var(--print-left);
+  top: var(--u);
+  width: var(--print-w);
+  height: var(--print-h);
+  border-radius: 3.69rem;
+  overflow: hidden;
+  background: #0b0b0b;
+  opacity: 0;
+}
+
+.sheets, .sheet {
+  position: absolute;
+  inset: 0;
+}
+
+.sheet img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* The print's tattoo: capitals the size of a caption, laid across it in a loose grid (the phone's, to the print). */
+.micro {
+  position: absolute;
+  inset: 0;
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 1.5rem;
+  line-height: 1.84rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, .86);
+  pointer-events: none;
+}
+
+.micro .row {
+  position: absolute;
+  left: 2.3rem;
+  right: 2.3rem;
+  display: flex;
+  justify-content: space-between;
+}
+
+.micro .head { top: 2.3rem; }
+.micro .head > div { width: 16.59rem; }
+.micro .middle { top: 50%; transform: translateY(calc(-50% + 12.9rem)); }
+.micro .middle > div { width: 19.35rem; }
+.micro .tail { bottom: 2.3rem; }
+.micro .tail > div { width: 22.12rem; }
+
+.micro .head > div, .micro .tail > div {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.micro .middle .line2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* --- The dial, standing on the right edge -------------------------------------------------------- */
+
+/* Its box: its radius (45.06rem, so its hand reaches the print's top and foot), the phone's crown
+   (14 dp) above and below, its foot (6 dp) at the edge; its pivot level with the screen's middle. */
+.dial {
+  position: absolute;
+  right: 0;
+  top: 5.455rem;
+  width: 50.04rem;
+  height: 97.09rem;
+}
+
+.dial canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* The time gone and the time left at its heart, by the pivot as the phone sets them, above the axis. */
+.time {
+  position: absolute;
+  right: var(--heart);
+  bottom: calc(50% + 1.2rem);
+  text-align: right;
+}
+
+.time .now {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 5.48rem;
+  line-height: 6.48rem;
+  font-variant-numeric: tabular-nums lining-nums;
+  color: rgba(255, 255, 255, .92);
+}
+
+.time .left {
+  font-family: var(--serif);
+  font-size: 3.36rem;
+  line-height: 4.48rem;
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--grey);
+  min-height: 4.48rem;
+}
+
+/* --- The key, in the dial's heart below the axis ----------------------------------------------- */
+
+/* The tab bar's clear lens, round, the app's own mark; lit while the words show. */
+.key {
+  position: absolute;
+  right: var(--heart);
+  top: calc(54rem + 1.2rem);
+  width: var(--u);
+  height: var(--u);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, .015) 0 56%, rgba(255, 255, 255, .06) 82%, rgba(255, 255, 255, .1) 100%);
+  outline: none;
+  opacity: 0;
+  visibility: hidden;
+  z-index: 6;
+  will-change: transform, opacity;
+}
+
+/* The lens's rim: light gathered at its edge, bright where the light falls (drawLensRim). */
+.key::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  padding: .13rem;
+  background: linear-gradient(135deg, rgba(255, 255, 255, .62) 0%, rgba(255, 255, 255, .12) 45%, rgba(255, 255, 255, .3) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+/* Its dispersion: the rim split a hair's breadth into a cool edge and a warm one. */
+.key::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: inset .09rem .09rem 0 0 rgba(169, 220, 255, .22), inset -.09rem -.09rem 0 0 rgba(255, 201, 163, .16);
+}
+
+/* Lit: the bar's lit drop. */
+.key .lit {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, .2), rgba(255, 255, 255, .11));
+  opacity: 0;
+}
+
+/* 18 dp of a 44 dp key, as GlassCircle sets its mark. */
+.key svg {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2.95rem;
+  height: 2.95rem;
+  transform: translate(-50%, -50%);
+  fill: #fff;
+}
+
+/* Named beside the key while the remote is on it. */
+.key-word {
+  position: absolute;
+  right: calc(var(--heart) + var(--u) + 2.4rem);
+  top: calc(54rem + 1.2rem + (var(--u) - 3.48rem) / 2);
+  font-family: var(--sans);
+  font-weight: 500;
+  font-size: 2.49rem;
+  line-height: 3.48rem;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--white);
+  white-space: nowrap;
+  opacity: 0;
+  z-index: 6;
+}
+
+/* --- The words, full screen (Now Playing's Verse, at the TV's size) ------------------------------- */
+
+.lyrics {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 192rem;
+  height: 108rem;
+  background: var(--black);
+  visibility: hidden;
+  z-index: 5;
+  will-change: transform;
+}
+
+.page {
+  position: absolute;
+  left: var(--u);
+  right: var(--u);
+  top: 0;
+  height: 108rem;
+  overflow: hidden;
+}
+
+.lines {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  will-change: transform;
+}
+
+/* The book serif at its heaviest (34 sp on the phone), each line a step back but the one being sung. */
+.line {
+  font-family: var(--serif);
+  font-weight: 800;
+  font-size: 8.46rem;
+  line-height: 10.2rem;
+  padding: 2.49rem 0;
+  max-width: 140rem;
+  color: var(--white);
+  opacity: 0;
+  transform-origin: 0 50%;
+}
+
+/* Words with no times: as they are, centred, to be read (Untimed: 21 sp, a step back). */
+.lines.untimed .line {
+  font-weight: 500;
+  font-size: 5.23rem;
+  line-height: 7.47rem;
+  padding: 0;
+  max-width: none;
+  text-align: center;
+}
+
+.line.gap { height: 4rem; padding: 0; }
+
+/* The page goes into the black under the song's name and above its credit, as a page under glass. */
+.fade-top, .fade-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+
+/* The phone's 170 dp and 150 dp of a 915 dp screen, as shares of this one's height. */
+.fade-top { top: 0; height: 20.1rem; background: linear-gradient(to bottom, #000 45%, rgba(0, 0, 0, 0) 100%); }
+.fade-foot { bottom: 0; height: 17.7rem; background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, #000 60%); }
+
+.lyrics-name {
+  position: absolute;
+  left: var(--u);
+  top: var(--u);
+  max-width: 120rem;
+  font-family: var(--sans);
+  font-weight: 500;
+  font-size: 2.49rem;
+  line-height: var(--u);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--grey);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.credit {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--u);
+  text-align: center;
+  font-family: var(--sans);
+  font-weight: 500;
+  font-size: 2.49rem;
+  line-height: 3.48rem;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+/* --- Over everything: the name on black, and the song arriving through it ----------------------- */
+
+.veil {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 10;
+}

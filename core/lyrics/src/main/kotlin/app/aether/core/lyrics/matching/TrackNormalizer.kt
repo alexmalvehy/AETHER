@@ -189,9 +189,20 @@ object ArtistNames {
      */
     fun comparableForms(display: String): Set<String> {
         val full = normalize(display)
-        val parts = split(display).map(::normalize).filter { it.length >= 2 }
+        val parts = split(display).flatMap(::withAlias).map(::normalize).filter { it.length >= 2 }
         return (parts + full).filter { it.isNotBlank() }.toSet()
     }
+
+    /**
+     * "BTS (防弹少年团)", as KuGou credits them: a name with the other name it goes by in brackets is
+     * both of its names (AETHER, 2026-11-19).
+     */
+    private fun withAlias(name: String): List<String> {
+        val m = ALIASED.matchEntire(name.trim()) ?: return listOf(name)
+        return listOf(name, m.groupValues[1], m.groupValues[2])
+    }
+
+    private val ALIASED = Regex("""(.+?)\s*[(（\[]([^()（）\[\]]+)[)）\]]""")
 
     private val PUNCT = Regex("""[^\p{L}\p{M}\p{N}\s]""")
     private val SEPARATORS = Regex(
