@@ -2,6 +2,11 @@ name: Attach APK to Release
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag override (defaults to v<versionName> from app/build.gradle.kts)'
+        required: false
+        type: string
   push:
     branches:
       - release-assets
@@ -12,13 +17,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout main (read app version)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: app-src
+
       - name: Checkout release-assets
         uses: actions/checkout@v4
         with:
           ref: release-assets
+          path: release-assets
 
       - name: Upload APK to Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          gh release upload v2.4.0 AETHER-v2.4.0.apk --clobber -R ${{ github.repository }}
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app-src/app/build.gradle.kts)
+          TAG="${INPUT_TAG:-v${VERSION}}"
+          gh release upload "$TAG" "release-assets/AETHER-${TAG}.apk" --clobber -R ${{ github.repository }}
