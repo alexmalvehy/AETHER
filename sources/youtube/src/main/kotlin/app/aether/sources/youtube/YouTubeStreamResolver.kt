@@ -44,6 +44,10 @@ class YouTubeStreamResolver(
 
     private val visitors = ConcurrentHashMap<String, Pair<String, Long>>()
     private val resolved = ConcurrentHashMap<String, Stream>()
+    private val tracking = ConcurrentHashMap<String, PlaybackTracking>()
+
+    /** The latest [PlaybackTracking] extracted from an InnerTube `player` response for [videoId]. */
+    fun playbackTracking(videoId: String): PlaybackTracking? = tracking[videoId]
 
     /** Which app and format each resolved stream came from ("VISIONOS:251"). */
     private val servedVia = ConcurrentHashMap<String, String>()
@@ -257,17 +261,20 @@ class YouTubeStreamResolver(
             else -> return Outcome.Err(SourceError.NotPlayable(playability?.str("reason")))
         }
         json.obj("videoDetails")?.str("videoId")?.let { if (it != videoId) return Outcome.Err(SourceError.NotPlayable("another video")) }
+        YouTubeHistoryTracker.extractPlaybackTracking(json, videoId)?.let { tracking[videoId] = it }
         return Outcome.Ok(json)
     }
 
     private suspend fun tryApp(app: App, videoId: String, efficient: Boolean): Outcome<Stream> {
         val visitor = visitorFor(app)
+        val cpn = YouTubeHistoryTracker.generateCpn()
         val body = buildJsonObject {
             putJsonObject("context") {
                 put("client", clientContext(app, visitor))
                 putJsonObject("user") { put("lockedSafetyMode", false) }
             }
             put("videoId", videoId)
+            put("cpn", cpn)
             put("contentCheckOk", true)
             put("racyCheckOk", true)
             putJsonObject("playbackContext") {
@@ -293,6 +300,7 @@ class YouTubeStreamResolver(
         }
         // The song asked for, not a stand-in.
         json.obj("videoDetails")?.str("videoId")?.let { if (it != videoId) return Outcome.Err(SourceError.NotPlayable("another video")) }
+        YouTubeHistoryTracker.extractPlaybackTracking(json, videoId, cpn)?.let { tracking[videoId] = it }
 
         val formats = (json.obj("streamingData")?.get("adaptiveFormats") as? JsonArray).orEmpty()
             .mapNotNull { it as? JsonObject }

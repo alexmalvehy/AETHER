@@ -179,5 +179,9 @@ class YouTubeSource(
 
     override suspend fun video(id: MediaId, maxHeight: Int): Outcome<VideoStream> = streams.video(id.key, maxHeight)
 
+    /** Returns the latest extracted [PlaybackTracking] for [id], if resolved. */
+    fun playbackTracking(id: MediaId): PlaybackTracking? =
+        if (id.source == SOURCE) streams.playbackTracking(id.key) else null
+
     override fun invalidate(id: MediaId) = streams.forget(id.key)
 }

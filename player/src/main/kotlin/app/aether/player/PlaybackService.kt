@@ -125,6 +125,19 @@ interface PlaybackEnvironment {
 
     /** The late copy wouldn't play: it isn't offered again for a while. */
     fun dropLateCopy(id: MediaId) {}
+
+    /** Reports continuous playback upstream to YouTube Music history when opt-in history sync is enabled. */
+    suspend fun reportPlayback(track: Track, positionMs: Long) {}
+
+    /** Emits whenever the set of liked track IDs changes so media notification buttons stay in sync. */
+    val likedIds: Flow<Set<MediaId>> get() = emptyFlow()
+
+    /** Whether [id] is currently in the listener's Liked Songs library. */
+    suspend fun isLiked(id: MediaId): Boolean = false
+
+    /** Toggles liked state for [track] and returns the resulting liked state. */
+    suspend fun toggleLike(track: Track): Boolean = false
+
     fun sessionActivity(): PendingIntent?
 }
 
@@ -189,6 +202,10 @@ class PlaybackService : MediaLibraryService() {
     /** The song last recovered, how many times in a row, and when last. */
     private var retried: Triple<String, Int, Long>? = null
     private var counted: String? = null
+    private var trackedHistory: String? = null
+    private var continuousPlayKey: String? = null
+    private var continuousPlayMs: Long = 0L
+    private lateinit var notificationActions: NotificationActionHandler
 
     /** What the bit-perfect output (BitChord's) last said: the DAC and whether a song is going to it untouched. */
     private var route = Route(null, false)
@@ -252,6 +269,12 @@ class PlaybackService : MediaLibraryService() {
         )
         startAutomix()
         watchSleepTimer()
+        notificationActions = NotificationActionHandler(
+            scope = scope,
+            env = env,
+            playerProvider = { player },
+            sessionProvider = { session },
+        )
         // The player's notification wears AETHER's mark in the status bar, not Media3's play symbol.
         setMediaNotificationProvider(
             androidx.media3.session.DefaultMediaNotificationProvider.Builder(this).build().apply { setSmallIcon(R.drawable.aether_mark) },
@@ -297,6 +320,7 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         scope.launch { env.lateCopies.collect(::carryOver) }
+        scope.launch { env.likedIds.collect { notificationActions.refreshCustomLayout() } }
         scope.launch { restore() }
         scope.launch { countPlays() }
     }
@@ -624,7 +648,10 @@ class PlaybackService : MediaLibraryService() {
 
     private fun songChanged(item: MediaItem?) {
         retried = null
+        continuousPlayKey = null
+        continuousPlayMs = 0L
         if (pendingCopy?.value != item?.mediaId) pendingCopy = null
+        notificationActions.refreshCustomLayout()
         saveSoon()
         topUp()
     }
@@ -783,6 +810,17 @@ class PlaybackService : MediaLibraryService() {
             if (!heard.isPlaying) continue
             val item = player.currentMediaItem ?: continue
             val key = "${player.currentMediaItemIndex}|${item.mediaId}"
+            if (continuousPlayKey != key) {
+                continuousPlayKey = key
+                continuousPlayMs = 2_000L
+            } else {
+                continuousPlayMs += 2_000L
+            }
+            if (trackedHistory != key && continuousPlayMs >= 12_000L) {
+                trackedHistory = key
+                val pos = heard.currentPosition.coerceAtLeast(12_000L)
+                item.toTrack()?.let { t -> scope.launch(Dispatchers.IO) { runCatching { env.reportPlayback(t, pos) } } }
+            }
             val duration = heard.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: Long.MAX_VALUE
             if (counted != key && heard.currentPosition >= minOf(30_000L, duration / 2)) {
                 counted = key
@@ -865,6 +903,28 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private inner class Callback : MediaLibrarySession.Callback {
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): MediaSession.ConnectionResult {
+            val currentTrack = player.currentMediaItem?.toTrack()
+            val isLiked = currentTrack?.let { runBlocking { runCatching { env.isLiked(it.id) }.getOrDefault(false) } } ?: false
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(notificationActions.availableSessionCommands())
+                .setCustomLayout(notificationActions.buildCustomLayout(isLiked))
+                .build()
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: androidx.media3.session.SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<androidx.media3.session.SessionResult> {
+            notificationActions.onCustomCommand(session, customCommand, args)?.let { return it }
+            return super.onCustomCommand(session, controller, customCommand, args)
+        }
+
         override fun onAddMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>): ListenableFuture<MutableList<MediaItem>> =
             Futures.immediateFuture(mediaItems.map { it.playable() }.toMutableList())
 

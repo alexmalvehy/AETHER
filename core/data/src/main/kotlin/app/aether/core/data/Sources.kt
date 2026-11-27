@@ -395,6 +395,11 @@ class Settings(context: Context) {
     val fullScreen: StateFlow<Boolean> = _fullScreen.asStateFlow()
     fun setFullScreen(on: Boolean) = set(FULL_SCREEN, on, _fullScreen)
 
+    private val _syncHistory = flag(SYNC_HISTORY, false)
+    /** Opt-in: report playback progress upstream so tracks appear in YouTube Music history and Recap. */
+    val syncHistory: StateFlow<Boolean> = _syncHistory.asStateFlow()
+    fun setSyncHistory(on: Boolean) = set(SYNC_HISTORY, on, _syncHistory)
+
     private val _crossfade = MutableStateFlow(prefs.getInt(CROSSFADE, 0))
     /** Seconds the end of one song and the start of the next overlap; 0 is off. */
     val crossfade: StateFlow<Int> = _crossfade.asStateFlow()
@@ -499,5 +504,6 @@ class Settings(context: Context) {
         const val BIT_PERFECT = "bit_perfect"
         const val SONG_ORDERS = "song_orders"
         const val FULL_SCREEN = "full_screen"
+        const val SYNC_HISTORY = "sync_history"
     }
 }
