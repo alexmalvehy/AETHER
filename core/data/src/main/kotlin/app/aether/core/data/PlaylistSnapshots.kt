@@ -21,7 +21,8 @@ import java.io.File
  * from its page: it belongs in the Library as much as one that was saved.
  */
 class PlaylistSnapshots(context: Context) {
-    data class Snapshot(val playlist: Playlist, val tracks: List<Track>, val keptFrom: Boolean)
+    /** [keptAt]: when songs were first kept from it, which is when it came into the library (0 if before that was noted). */
+    data class Snapshot(val playlist: Playlist, val tracks: List<Track>, val keptFrom: Boolean, val keptAt: Long = 0)
 
     private val file = File(context.filesDir, "playlist-snapshots.json")
     private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -32,13 +33,13 @@ class PlaylistSnapshots(context: Context) {
     fun seen(playlist: Playlist, tracks: List<Track>) {
         val before = _all.value[playlist.id]
         if (before != null && before.tracks.map { it.id } == tracks.map { it.id } && before.playlist == playlist) return
-        update(playlist.id, Snapshot(playlist, tracks, before?.keptFrom ?: false))
+        update(playlist.id, Snapshot(playlist, tracks, before?.keptFrom ?: false, before?.keptAt ?: 0))
     }
 
     /** Songs of [id] were kept from its page. */
     fun keptFrom(id: MediaId) {
         val before = _all.value[id] ?: return
-        if (!before.keptFrom) update(id, before.copy(keptFrom = true))
+        if (!before.keptFrom) update(id, before.copy(keptFrom = true, keptAt = System.currentTimeMillis()))
     }
 
     private fun update(id: MediaId, snapshot: Snapshot) {
@@ -55,6 +56,7 @@ class PlaylistSnapshots(context: Context) {
                 put("playlist", s.playlist.toSavedJson())
                 put("tracks", JSONArray().apply { s.tracks.forEach { put(it.toJson()) } })
                 put("keptFrom", s.keptFrom)
+                put("keptAt", s.keptAt)
             })
         }
         val tmp = File(file.parentFile, file.name + ".tmp")
@@ -69,7 +71,7 @@ class PlaylistSnapshots(context: Context) {
             val playlist = playlistFromJson(o.getString("playlist")) ?: return@mapNotNull null
             val list = o.getJSONArray("tracks")
             val tracks = (0 until list.length()).mapNotNull { trackFromJson(list.getString(it)) }
-            playlist.id to Snapshot(playlist, tracks, o.optBoolean("keptFrom", false))
+            playlist.id to Snapshot(playlist, tracks, o.optBoolean("keptFrom", false), o.optLong("keptAt", 0))
         }.toMap()
     }.getOrDefault(emptyMap())
 }

@@ -131,6 +131,7 @@ class LocalSource(
             MediaStore.Audio.Media.TRACK,
             MediaStore.Audio.Media.YEAR,
             MediaStore.Audio.Media.DATE_ADDED,
+            MediaStore.Audio.Media.DATE_MODIFIED,
             MediaStore.MediaColumns.RELATIVE_PATH,
             if (albumArtist) MediaStore.Audio.Media.ALBUM_ARTIST else null,
         ).toTypedArray()
@@ -153,6 +154,7 @@ class LocalSource(
                 val iPath = c.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
                 val iAlbumId = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID)
                 val iAdded = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
+                val iModified = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_MODIFIED)
                 val iAlbumArtist = if (albumArtist) c.getColumnIndex(MediaStore.Audio.Media.ALBUM_ARTIST) else -1
                 while (c.moveToNext()) {
                     val key = c.getLong(iId)
@@ -178,6 +180,7 @@ class LocalSource(
                         // The store writes a song's place as its disc's thousands and its own number.
                         disc = c.getInt(iTrack) / 1000,
                         addedAt = c.getLong(iAdded),
+                        modifiedAt = c.getLong(iModified),
                     )
                 }
             }

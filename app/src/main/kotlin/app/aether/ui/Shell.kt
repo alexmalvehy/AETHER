@@ -2,6 +2,10 @@
 
 package app.aether.ui
 
+import app.aether.core.designsystem.glass.drawLensRim
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.inset
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
 import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -61,6 +65,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
@@ -122,6 +127,8 @@ import app.aether.ui.player.MiniPlayer
 import app.aether.ui.player.NowPlaying
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.format.TextStyle
 import java.util.Locale
@@ -150,6 +157,22 @@ import androidx.compose.ui.unit.sp
 import app.aether.core.designsystem.glass.backdrop.Backdrop
 import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
+import app.aether.core.designsystem.motion.Becoming
+import app.aether.ui.player.Growth
+import app.aether.ui.player.PlayerFrame
+import app.aether.ui.player.PlayerWindow
 
 /** What any screen can ask of the app: go somewhere, play something, act on a track. */
 @Stable
@@ -165,21 +188,22 @@ class Actions(
 ) {
     val playback = container.playback
 
+    /** Where things the shell moves between are on screen (the mini player and its cover), found again every frame. */
+    val anchors = app.aether.core.designsystem.motion.Anchors()
+
     /** The open page's menu, drawn by the shell in the top corner above the frost, as the back key is. */
     val corner = app.aether.ui.common.PageCorner()
 
-    /** What the opened folder showed, so its page can stand it open at once, before anything loads. */
-    var preview by mutableStateOf<FolderPreview?>(null)
+    /** The menu a key on a page opened (a list's orders): drawn by the shell, above the frost and the dock. */
+    val choices = app.aether.ui.common.Choices()
 
     /**
-     * Opens a folder's page: the folder flies there from [from] on [fromPage], and stands open while
-     * the list loads. With nowhere to fly from, the page simply slides in holding the folder.
+     * Opens a folder's page: the page grows out of the folder in [slot] and the folder flies to its head,
+     * standing open while the list loads. With no place to grow from (reduced motion), it slides in
+     * holding the folder. Touched while its page is still flying home, the same page comes back.
      */
-    fun openFolder(preview: FolderPreview, route: Route, pose: FolderPose, from: LayoutCoordinates?, fromPage: PageEntry?) {
-        this.preview = preview
-        go(route)
-        if (from != null) flight.depart(preview, pose, from, fromPage?.frame, nav.top)
-    }
+    fun openFolder(preview: FolderPreview, route: Route, pose: FolderPose, slot: SlotKey?, slotWidth: Dp) =
+        openFolderPage(nav, flight, preview, route, pose, slot, slotWidth) { go(it) }
 
     fun openNowPlaying() = player.show()
 
@@ -188,6 +212,7 @@ class Actions(
      * player folds back into the mini player while the page slides in.
      */
     fun go(route: Route) {
+        choices.close()
         if (menu.visible) menu.hide()
         if (player.visible) player.hide()
         nav.open(route)
@@ -198,8 +223,9 @@ class Actions(
         if (tracks.isEmpty()) return
         container.scope.launch { container.library.remember(tracks) }
         playback.play(tracks, index)
-        if (tracks.size == 1) extendWithRadio(tracks[0])
-        else tracks.getOrNull(index)?.takeIf { it.bare }?.let { t -> container.scope.launch { container.sources.of(t.id)?.upNext(t)?.let { (it as? Outcome.Ok)?.value?.tracks?.let { r -> mend(t, r) } } } }
+        // What plays on after them is the engine's to add (BitChord's AutoPlay, in the service). A song
+        // chosen with no artist is told who it's by from the catalogue's own answer for it.
+        tracks.getOrNull(index)?.takeIf { it.bare }?.let { t -> container.scope.launch { container.sources.of(t.id)?.upNext(t)?.let { (it as? Outcome.Ok)?.value?.tracks?.let { r -> mend(t, r) } } } }
     }
 
     private val Track.bare get() = artists.isEmpty() || title.isBlank()
@@ -227,17 +253,6 @@ class Actions(
         play(tracks.shuffled(), 0)
     }
 
-    fun extendWithRadio(track: Track) {
-        container.scope.launch {
-            val source = container.sources.of(track.id) ?: return@launch
-            val next = source.upNext(track)
-            if (next is Outcome.Ok) {
-                mend(track, next.value.tracks)
-                playback.extend(next.value.tracks.filter { it.id != track.id })
-            }
-        }
-    }
-
     /** Opens what an item is: a track plays, everything else is a page. */
     fun open(entity: MediaEntity) {
         when (entity) {
@@ -263,7 +278,8 @@ fun Shell() {
     val container = LocalContainer.current
     val arrival = LocalArrival.current
     val nav = remember { Navigator() }
-    val player = rememberDragState(give = Pull.Give, flick = Pull.Flick)
+    // Now Playing grows out of the mini player on Apple's spring: a slight cushion opening, none closing.
+    val player = rememberDragState(give = Pull.Give, flick = Pull.Flick, open = PlayerOpens, close = PlayerCloses)
     val menu = rememberDragState()
     val keeps = rememberDragState()
     var keepsInPlayer by remember { mutableStateOf(false) }
@@ -271,20 +287,32 @@ fun Shell() {
     // A menu asked for from Now Playing opens in Now Playing, over the cover it's about, and its
     // glass refracts that cover; asked for anywhere else, it opens over the room.
     var menuInPlayer by remember { mutableStateOf(false) }
+    var playerMade by remember { mutableStateOf(false) }
     val flightScope = rememberCoroutineScope()
     val context = LocalContext.current
     val haptics = LocalHaptics.current
     val keep = remember { KeepFlight(context, flightScope, container.downloads, haptics) }
+    // The music going out to a TV: drawn up out of the top of the screen, as a song comes in at its foot.
+    val handoff = remember { app.aether.ui.player.CastHandoff(flightScope, haptics) }
     val card = remember { CardExport(flightScope, container.settings, container.library, container) }
     keep.onOpenList = {
         keepsInPlayer = player.value > 0.5f
         keeps.show()
     }
-    val actions = remember { Actions(container, nav, player, menu, FolderFlight(flightScope), keep, card) { t -> menuFor = t; menuInPlayer = player.value > 0.5f; menu.show() } }
+    val actions = remember { Actions(container, nav, player, menu, FolderFlight(), keep, card) { t -> menuFor = t; menuInPlayer = player.value > 0.5f; menu.show() } }
     val playback by container.playback.state.collectAsStateWithLifecycle()
     val reduce = LocalReduceMotion.current
     val density = LocalDensity.current
     val dock = rememberDock(reduce)
+    // The mini player is Now Playing's window as it grows (with reduced motion, a plain fade instead).
+    val window = remember { PlayerWindow(player, actions.anchors) }
+    val grows = !reduce
+    val view = LocalView.current
+    SideEffect {
+        window.screenRadius = displayCornerRadius(view)
+        // A pull keeps the window's top edge under the finger.
+        player.travel = if (grows) window::travel else null
+    }
     // A newer AETHER is offered on a sheet over the room, never over a song being listened to: one that
     // turns up while Now Playing is open waits for it to close.
     val update = rememberDragState()
@@ -292,9 +320,41 @@ fun Shell() {
     LaunchedEffect(updateShown, player.visible) {
         if (updateShown && !player.visible) update.show() else if (!updateShown) update.hide()
     }
+    // Found while a song is up: said at the foot at once, the sheet itself waiting for Now Playing to close.
+    val updateState by container.updates.state.collectAsStateWithLifecycle()
+    val offered = (updateState as? app.aether.update.UpdateState.Offer)?.release?.version?.toString()
+    LaunchedEffect(offered) {
+        if (offered != null && player.visible) keep.note("AETHER $offered is out")
+    }
 
     AutoQueue(actions)
+    // An import that ends with no pane open on it says so; its whole account waits under Import.
+    val bringing by container.transfer.state.collectAsStateWithLifecycle()
+    LaunchedEffect(bringing) {
+        val s = bringing
+        if (container.transfer.toAnnounce(s)) when (s) {
+            is app.aether.transfer.Transfer.State.Done -> keep.note(s.summary.headline)
+            is app.aether.transfer.Transfer.State.Failed -> keep.note(s.reason)
+            else -> Unit
+        }
+    }
+    // A real mix starting says so at the foot, for a moment (only a mix: a plain crossfade claims nothing).
+    val automixing by container.playback.automixing.collectAsStateWithLifecycle()
+    LaunchedEffect(automixing) { if (automixing) keep.note("Automixing") }
+    // What the TV has to say ("The TV couldn't play this one"), said as every note is.
+    LaunchedEffect(Unit) { app.aether.player.cast.CastController.notes.collect { keep.note(it) } }
+    // A playlist that can't be kept in step with YouTube Music any more, and why.
+    LaunchedEffect(Unit) { container.playlistSync.notes.collect { keep.note(it) } }
+    LaunchedEffect(Unit) { app.aether.player.cast.CastController.handoffs.collect { handoff.play(keep.screen, keep.density, keep.reduce) } }
     LaunchedEffect(playback.hasMedia) { if (!playback.hasMedia) player.hide() }
+    // Opened from the home-screen widget: on Now Playing, once there's a song to show.
+    val nowPlayingAsked by app.aether.MainActivity.NowPlayingAsked.collectAsStateWithLifecycle()
+    LaunchedEffect(nowPlayingAsked, playback.hasMedia) {
+        if (nowPlayingAsked && playback.hasMedia) {
+            player.show()
+            app.aether.MainActivity.NowPlayingAsked.value = false
+        }
+    }
     // Every new page starts with the dock open.
     LaunchedEffect(nav.current) { dock.unfold() }
 
@@ -324,25 +384,47 @@ fun Shell() {
             // hidden unless told not to, so they aren't placed.
             val veiled = { Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && player.value > 0.13f }
             val frostUnderVeil by remember { derivedStateOf { veiled() } }
-            val dockUnderPlayer by remember { derivedStateOf { player.value > 0.24f } }
+            // The dock fades as the window grows over it, and isn't placed once it's gone; but never under a
+            // finger, which may be holding the very pill it's pulling up (unplacing it cancelled the pull).
+            val dockUnderPlayer by remember(grows) { derivedStateOf { player.value > (if (grows) DockGone else 0.24f) && !player.holding } }
+            // Where the pill stands with the dock open: what the window closes into if the pill can't be found.
+            val navBottom = WindowInsets.navigationBarsIgnoringVisibility.asPaddingValues().calculateBottomPadding()
+            SideEffect {
+                with(density) {
+                    val bottom = screen - (navBottom + Gap + Bar + Gap).toPx()
+                    window.restingPill = Rect(Space.edge.toPx(), bottom - Bar.toPx(), screenWidth - Space.edge.toPx(), bottom)
+                }
+            }
             val menuSheet: @Composable () -> Unit = {
                 DragSheet(menu, onClosed = { menuFor = null; menuInPlayer = false }) {
-                    menuFor?.let { track -> TrackMenu(track, close = { menu.hide() }) }
+                    menuFor?.let { track -> TrackMenu(track, close = { menu.hide() }, inPlayer = menuInPlayer) }
                 }
             }
             val keepsSheet: @Composable () -> Unit = {
                 DragSheet(keeps, height = 500.dp, onClosed = { keepsInPlayer = false }) { KeepList(close = { keeps.hide() }) }
             }
             GlassHost(
-                // A song going into the phone moves the whole screen; the rest of the time this is nothing.
-                Modifier.fillMaxSize().pullRipple(keep.ripple),
+                // A song going into the phone moves the whole screen, and the music going out to a TV; the
+                // rest of the time these are nothing.
+                Modifier.fillMaxSize().pullRipple(keep.ripple).pullRipple(handoff.ripple),
                 // The whole plane, its black ground included, isn't drawn under a Now Playing that covers it,
                 // or under the blur of it, which is all that can be seen of it once that's fully in.
                 hideContent = { covered() || veiled() },
                 content = {
-                    // What moves by itself on a page rests while anything is over it: the blur under
-                    // Now Playing and the frost under a sheet are made from a page that holds still.
-                    Pages(nav, actions.flight, dock.watcher, paused = { player.visible || menu.visible || keeps.visible })
+                    // As Now Playing grows, the room behind settles back a little, for depth.
+                    Box(
+                        Modifier.fillMaxSize().graphicsLayer {
+                            if (grows) {
+                                val k = 1f - RoomSettles * player.value.coerceIn(0f, 1f)
+                                scaleX = k
+                                scaleY = k
+                            }
+                        },
+                    ) {
+                        // What moves by itself on a page rests while anything is over it: the blur under
+                        // Now Playing and the frost under a sheet are made from a page that holds still.
+                        Pages(nav, actions.flight, dock.watcher, paused = { player.visible || menu.visible || keeps.visible || update.visible })
+                    }
                 },
                 overlay = {
                     val top = WindowInsets.statusBarsIgnoringVisibility.asPaddingValues().calculateTopPadding()
@@ -361,34 +443,111 @@ fun Shell() {
                         // focus as it's pulled down. The keys and the dock stay sharp, above it. It runs on
                         // a little under Now Playing's edge, to fill its rounded shoulders.
                         if (player.visible) {
-                            val shoulder = with(density) { ShoulderRadius.toPx() }
-                            BackdropVeil(amount = { player.value }, coveredFrom = { (1f - player.value.coerceIn(0f, 1f)) * screen + shoulder })
+                            if (grows) {
+                                // The window grows from the pill, not from the screen's foot: the whole room is
+                                // blurred behind it (and not at all once Now Playing covers it).
+                                BackdropVeil(amount = { player.value }, coveredFrom = { if (player.value >= 0.999f) 0f else screen })
+                            } else {
+                                BackdropVeil(amount = { player.value }, coveredFrom = { screen })
+                            }
                         }
                         Corner(nav, player)
                         SettingsKey(nav, screenWidth)
                         PageCornerMenu(actions.corner, shown = nav.depth > 1 && !player.visible)
                         Box(Modifier.fillMaxSize().placedWhile { !dockUnderPlayer }) {
-                            Dock(nav, playback, player, dock)
+                            Dock(nav, playback, player, dock, grows)
                         }
+                        // Now Playing rising puts a menu away; over the dock, so a touch on it only closes the menu.
+                        LaunchedEffect(player.visible) { if (player.visible) actions.choices.close() }
+                        app.aether.ui.common.ChoiceMenu(actions.choices, footRoom = 170.dp)
                     }
-                    if (player.visible) {
+                    // Now Playing stays made once there's a song, and stays in the picture, shut to nothing
+                    // while it's down: not drawn, not touchable, and not let go. Taken out of the picture,
+                    // Android threw its drawings away, and the first frame of every opening made them all
+                    // again (90 ms), so the window's first step was already 40% of the way. Opening it is
+                    // moving it, not building it. It's first made once the rooms have settled after launch,
+                    // or the moment it's opened.
+                    val playerUp = player.visible
+                    LaunchedEffect(playerUp) { if (playerUp) playerMade = true }
+                    // Once the rooms are made, every playlist's songs are read once, so the first one opened
+                    // has its keys and its songs on its first frame.
+                    LaunchedEffect(nav.keepsMade) {
+                        if (nav.keepsMade) withContext(Dispatchers.Default) { runCatching { container.library.warm() } }
+                    }
+                    if (playback.current != null && (playerMade || playerUp || nav.keepsMade)) {
                         Box(
                             Modifier
                                 .fillMaxSize()
+                                .onPlaced { window.host = it }
                                 .graphicsLayer {
-                                    val p = player.value.coerceIn(0f, 1f)
-                                    translationY = (1f - p) * screen
-                                    // A sheet with rounded shoulders while it travels, square once it fills the
-                                    // screen. All four corners are round, the lower two off the screen: one plain
-                                    // rounded rectangle is the cheap clip, and this moves on every frame.
-                                    if (p < 0.999f) {
+                                    if (!player.visible) {
+                                        // Down: cut to nothing, which Android neither draws nor sends touches to.
                                         clip = true
-                                        shape = RoundedCornerShape(with(density) { (ShoulderRadius * ((1f - p) * 14f).coerceAtMost(1f)).toPx() })
+                                        shape = Shut
+                                        return@graphicsLayer
+                                    }
+                                    if (!grows) {
+                                        // Reduced motion: Now Playing simply comes up over the room.
+                                        alpha = player.value.coerceIn(0f, 1f)
+                                        return@graphicsLayer
+                                    }
+                                    // The island: Now Playing is cut to the rectangle between the pill and the
+                                    // screen. Touches outside it go to the room, which is why it's a clip.
+                                    val f = window.frame() ?: return@graphicsLayer
+                                    if (f.p < 0.9995f) {
+                                        clip = true
+                                        shape = WindowClip(f.window, f.radius)
+                                    }
+                                    // A pill that can't be found: the window closes to where it stands, fading.
+                                    if (!f.found) alpha = Becoming.ramp(f.p, 0f, 0.3f)
+                                }
+                                .pointerInput(player) {
+                                    // Caught as it closes, a touch that doesn't travel turns it round; a drag is the
+                                    // pull's, below. At rest, Now Playing's own touches.
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                        if (player.value >= 0.999f || player.target >= 0.5f) return@awaitEachGesture
+                                        down.consume()
+                                        var travelled = 0f
+                                        while (true) {
+                                            val e = awaitPointerEvent(PointerEventPass.Initial)
+                                            val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                                            if (!c.pressed) {
+                                                if (travelled <= viewConfiguration.touchSlop) {
+                                                    c.consume()
+                                                    player.show()
+                                                }
+                                                break
+                                            }
+                                            travelled += c.positionChange().getDistance()
+                                            if (travelled > viewConfiguration.touchSlop) break
+                                        }
                                     }
                                 }
-                                .dragsOpen(player),
+                                .dragsOpen(player)
+                                // Down, nothing in it is there to be read out.
+                                .then(if (playerUp) Modifier else Modifier.clearAndSetSemantics { })
+                                // The island's edge: the pill's own lit rim, along it for as long as it's an island.
+                                .then(if (grows) Modifier.islandRim(window) else Modifier),
                         ) {
-                            NowPlaying(player = player, onClose = { player.hide() }, menu = if (menuInPlayer || keepsInPlayer) ({ if (menuInPlayer) menuSheet(); if (keepsInPlayer) keepsSheet() }) else null)
+                            NowPlaying(
+                                player = player,
+                                onClose = { player.hide() },
+                                menu = if (menuInPlayer || keepsInPlayer) ({ if (menuInPlayer) menuSheet(); if (keepsInPlayer) keepsSheet() }) else null,
+                                window = window.takeIf { grows },
+                            )
+                            if (grows) {
+                                // What's written on the pill, riding the island's top edge until it's gone.
+                                MiniPlayer(
+                                    playback,
+                                    onOpen = {},
+                                    face = true,
+                                    modifier = Modifier
+                                        .placedWhile { player.visible && Growth.face(player.value) > 0.002f }
+                                        .windowRect(window) { Rect(it.window.left, it.window.top, it.window.right, it.window.top + it.pill.height) }
+                                        .graphicsLayer { alpha = Growth.face(player.value) },
+                                )
+                            }
                         }
                     }
                     if (!menuInPlayer || !player.visible) menuSheet()
@@ -441,8 +600,57 @@ private fun BoxScope.Corner(nav: Navigator, player: DragState) {
     }
 }
 
-/** How round Now Playing's top corners are while it travels. */
-private val ShoulderRadius = 34.dp
+/**
+ * Now Playing grows out of the mini player as the Dynamic Island grows: on Apple's springs with their
+ * bounce, a little give as it opens, and closing, a landing the pill takes and settles from.
+ */
+private val PlayerOpens = Motion.fluid<Float>(0.5f, 0.78f, 0.0008f)
+private val PlayerCloses = Motion.fluid<Float>(0.46f, 0.72f, 0.0008f)
+
+/** By here of the way the window has grown over the dock, and the dock has gone. */
+private const val DockGone = 0.3f
+
+/** How far the room behind settles back as Now Playing grows over it. */
+private const val RoomSettles = 0.03f
+
+/** Nothing: what Now Playing is cut to while it's down. */
+private object Shut : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline = Outline.Rectangle(Rect.Zero)
+}
+
+/** The island's lit rim, drawn over what's in it along its edge, as the pill's own glass draws it. */
+private fun Modifier.islandRim(window: PlayerWindow): Modifier = drawWithContent {
+    drawContent()
+    val f = window.frame() ?: return@drawWithContent
+    val a = Growth.rim(f.p)
+    if (a <= 0.004f || f.p <= 0f) return@drawWithContent
+    val r = f.window
+    // Drawn in the island's own box, so its light falls across the island as it falls across the pill.
+    inset(r.left, r.top, size.width - r.right, size.height - r.bottom) {
+        val path = Path().apply { addRoundRect(RoundRect(0f, 0f, size.width, size.height, CornerRadius(f.radius))) }
+        drawLensRim(path, a)
+    }
+}
+
+/** Placed at, and sized to, the rectangle [of] gives from this frame of [window]; nothing while there's no frame. */
+private fun Modifier.windowRect(window: PlayerWindow, of: (PlayerFrame) -> Rect): Modifier = layout { measurable, constraints ->
+    val r = window.frame()?.let(of)
+    if (r == null || r.width < 1f || r.height < 1f) {
+        measurable.measure(Constraints.fixed(0, 0))
+        return@layout layout(constraints.maxWidth, constraints.maxHeight) {}
+    }
+    val placeable = measurable.measure(Constraints.fixed(r.width.roundToInt(), r.height.roundToInt()))
+    layout(constraints.maxWidth, constraints.maxHeight) { placeable.place(r.left.roundToInt(), r.top.roundToInt()) }
+}
+
+/** The window, in the screen's coordinates: a rounded rectangle anywhere on it. */
+private class WindowClip(private val rect: Rect, private val radius: Float) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+        Outline.Rounded(RoundRect(rect, CornerRadius(radius)))
+
+    override fun equals(other: Any?) = other is WindowClip && other.rect == rect && other.radius == radius
+    override fun hashCode() = 31 * rect.hashCode() + radius.hashCode()
+}
 
 /** How a corner key comes and goes: on a spring with a little give. */
 private val KeyArrives = Motion.fluid(0.34f, 0.82f, 0.002f)
@@ -617,7 +825,7 @@ private fun Modifier.between(fold: () -> Float, open: Frame, folded: Frame): Mod
  * slides out from beside the circle. When the music stops it sinks back in.
  */
 @Composable
-private fun BoxScope.Dock(nav: Navigator, playback: PlaybackState, player: DragState, dock: DockState) {
+private fun BoxScope.Dock(nav: Navigator, playback: PlaybackState, player: DragState, dock: DockState, grows: Boolean) {
     val reduce = LocalReduceMotion.current
     val emerge = remember { Animatable(if (playback.hasMedia) 1f else 0f) }
     LaunchedEffect(playback.hasMedia) {
@@ -651,12 +859,25 @@ private fun BoxScope.Dock(nav: Navigator, playback: PlaybackState, player: DragS
                         translationX = if (folded) -(1f - e) * beside else 0f
                         scaleX = if (folded) 0.4f + 0.6f * e else 0.86f + 0.14f * e
                         scaleY = if (folded) 0.8f + 0.2f * e else 0.5f + 0.5f * e
-                        alpha = (e * 1.8f).coerceIn(0f, 1f) * (1f - player.value.coerceIn(0f, 1f))
+                        // Growing into Now Playing, the pill is the island: this one waits, hidden, and is
+                        // shown again in the frame the island lands back on it.
+                        val gone = if (grows) (if (player.visible) 0f else 1f) else 1f - player.value.coerceIn(0f, 1f)
+                        alpha = (e * 1.8f).coerceIn(0f, 1f) * gone
+                    }
+                    .graphicsLayer {
+                        // Landing back, the spring carries a little past it: the pill takes it, and settles.
+                        if (grows) {
+                            val k = Growth.squash(player.value)
+                            scaleX = k
+                            scaleY = k
+                        }
                     }
                     .dragsOpen(player),
             )
         }
-        TabBar(nav, dock, full)
+        Box(Modifier.graphicsLayer { if (grows) alpha = Growth.dock(player.value) }) {
+            TabBar(nav, dock, full)
+        }
     }
 }
 
@@ -891,21 +1112,13 @@ private fun Rooms(nav: Navigator, barGlass: LayerBackdrop, enabled: Boolean, mod
 private val LensShadow = Shadow(radius = 12.dp, offset = DpOffset(0.dp, 2.dp), color = Color.Black.copy(alpha = 0.3f))
 
 /**
- * Autoplay: when the queue is about to run out, what follows its last track is added, as YouTube
- * Music does, so music never stops by surprise. Once per last track.
+ * The prints either side of the song playing, kept ready. (What plays on when the queue runs low is the
+ * engine's: BitChord's AutoPlay, in the playback service, so it goes on with the app closed.)
  */
 @Composable
-private fun AutoQueue(actions: Actions) {
+private fun AutoQueue(@Suppress("UNUSED_PARAMETER") actions: Actions) {
     val container = LocalContainer.current
     val state by container.playback.state.collectAsStateWithLifecycle()
-    var extendedFor by remember { mutableStateOf<String?>(null) }
-    val last = state.queue.lastOrNull()
-    val nearEnd = state.hasMedia && state.index >= state.queue.size - 2
-    LaunchedEffect(nearEnd, last?.id) {
-        if (!nearEnd || last == null || extendedFor == last.id.value) return@LaunchedEffect
-        extendedFor = last.id.value
-        actions.extendWithRadio(last)
-    }
     // The prints either side of the song on are kept ready, so going on or back has its picture in
     // hand the moment it's asked for, and Now Playing opens on its own at once.
     val context = LocalContext.current

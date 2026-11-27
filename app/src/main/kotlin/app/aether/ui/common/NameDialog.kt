@@ -45,6 +45,8 @@ fun NameDialog(title: String, initial: String, onDone: (String) -> Unit, onDismi
     var value by remember { mutableStateOf(TextFieldValue(initial, TextRange(initial.length))) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
+    // Back puts the question away, not the page it was asked on.
+    androidx.activity.compose.BackHandler(onBack = onDismiss)
     Box(
         Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)).pointerInput(Unit) { detectTapGestures { onDismiss() } }.imePadding(),
         contentAlignment = Alignment.Center,

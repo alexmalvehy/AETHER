@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Previous and next: AETHER's glass key as a widget can draw it (no blur, no lens in a widget): a rim lit from
+  above, round a body a shade lighter at its top than its foot.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:angle="270"
+                android:endColor="#14FFFFFF"
+                android:startColor="#59FFFFFF" />
+        </shape>
+    </item>
+    <item
+        android:bottom="1dp"
+        android:left="1dp"
+        android:right="1dp"
+        android:top="1dp">
+        <shape android:shape="oval">
+            <gradient
+                android:angle="270"
+                android:endColor="#FF111112"
+                android:startColor="#FF242426" />
+        </shape>
+    </item>
+</layer-list>

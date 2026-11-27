@@ -461,7 +461,7 @@ fun KeepList(close: () -> Unit) {
                     TreatedArtwork(e.track.artwork, ArtTreatment.Cover, Modifier.size(48.dp).clip(Corners.Small), sizeHintPx = 160)
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
-                        Txt(e.track.title, Type.TitleSmall, maxLines = 1)
+                        app.aether.core.designsystem.component.MarkedLine(e.track.title, e.track.explicit, Type.TitleSmall)
                         Txt(if (e.status == Downloads.Status.Keeping) "${(e.progress * 100).toInt()}%" else "Waiting", Type.Meta, color = Ink.Grey, maxLines = 1)
                         Spacer(Modifier.height(6.dp))
                         Canvas(Modifier.fillMaxWidth().height(2.dp)) {

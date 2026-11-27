@@ -64,6 +64,20 @@ object Pictures {
         context.imageLoader.enqueue(request(context, url, px, software, transformation, k))
     }
 
+    /**
+     * The picture's own pixels, for what's made from them (a morph's dots): from memory when it's
+     * there, otherwise loaded once. Null when it can't be had.
+     */
+    suspend fun bitmap(context: android.content.Context, url: String?, px: Int): Bitmap? {
+        url ?: return null
+        val k = key(url, px, true, null)
+        val image = context.imageLoader.memoryCache?.get(MemoryCache.Key(k))?.image
+            ?: (context.imageLoader.execute(request(context, url, px, true, null, k)) as? SuccessResult)?.image
+            ?: return null
+        val bitmap = image.toBitmap()
+        return if (bitmap.config == Bitmap.Config.HARDWARE) bitmap.copy(Bitmap.Config.ARGB_8888, false) else bitmap
+    }
+
     /** Waits until [url] is in memory: for a picture that shouldn't be shown before it's there. */
     suspend fun fetch(context: android.content.Context, url: String?, px: Int, software: Boolean = false) {
         url ?: return

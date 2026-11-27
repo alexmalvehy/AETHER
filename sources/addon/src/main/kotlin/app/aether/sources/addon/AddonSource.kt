@@ -15,6 +15,8 @@ import app.aether.core.model.SourceError
 import app.aether.core.model.Stream
 import app.aether.core.model.Track
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Call
@@ -210,10 +212,12 @@ class AddonSource(
         (l.startsWith("#EXT-X-KEY") || l.startsWith("#EXT-X-SESSION-KEY")) && !l.contains("METHOD=NONE")
     }
 
-    private suspend fun text(url: String, headers: Map<String, String>): String? = runCatching {
-        val request = Request.Builder().url(url).apply { headers.forEach { (k, v) -> header(k, v) } }.build()
-        http.newCall(request).await().use { r -> if (r.isSuccessful) r.body?.source()?.let { s -> s.request(MAX_MANIFEST_BYTES); s.buffer.clone().readUtf8() } else null }
-    }.getOrNull()
+    private suspend fun text(url: String, headers: Map<String, String>): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(url).apply { headers.forEach { (k, v) -> header(k, v) } }.build()
+            http.newCall(request).await().use { r -> if (r.isSuccessful) r.body?.source()?.let { s -> s.request(MAX_MANIFEST_BYTES); s.buffer.clone().readUtf8() } else null }
+        }.getOrNull()
+    }
 
     private fun trackOf(t: AddonTrack) = Track(
         id = MediaId("$id:${t.id}"),
@@ -237,7 +241,14 @@ class AddonSource(
         return b.build()
     }
 
-    private suspend fun <T> fetch(url: HttpUrl, read: (ByteArray) -> T?): Outcome<T> {
+    /**
+     * One request. Its answer is read, and closed, on the I/O threads whoever asked: reading a body or
+     * closing an unfinished one (which sends the server a reset) is network work Android refuses on
+     * the main thread, and an addon is never worth a crash.
+     */
+    private suspend fun <T> fetch(url: HttpUrl, read: (ByteArray) -> T?): Outcome<T> = withContext(Dispatchers.IO) { fetchHere(url, read) }
+
+    private suspend fun <T> fetchHere(url: HttpUrl, read: (ByteArray) -> T?): Outcome<T> {
         if (now() < restUntil) return Outcome.Err(SourceError.RateLimited(restUntil - now()))
         return try {
             val outcome = withTimeoutOrNull(REQUEST_TIMEOUT_MS) {
@@ -282,6 +293,9 @@ class AddonSource(
         } catch (e: IOException) {
             failed("It couldn't be reached.")
             Outcome.Err(SourceError.Network)
+        } catch (e: RuntimeException) {
+            failed("Its answer couldn't be read.")
+            Outcome.Err(SourceError.Server(null))
         }
     }
 
@@ -336,6 +350,13 @@ class AddonSource(
             http: OkHttpClient,
             choices: () -> Map<String, String>,
             losslessOutput: () -> Boolean,
+        ): Outcome<AddonSource> = withContext(Dispatchers.IO) { connectHere(address, http, choices, losslessOutput) }
+
+        private suspend fun connectHere(
+            address: String,
+            http: OkHttpClient,
+            choices: () -> Map<String, String>,
+            losslessOutput: () -> Boolean,
         ): Outcome<AddonSource> {
             val root = base(address) ?: return Outcome.Err(SourceError.NotFound("address"))
             if (root.scheme != "https" && root.host != "localhost") return Outcome.Err(SourceError.NotPlayable("Sources are reached over https only."))
@@ -357,6 +378,8 @@ class AddonSource(
                 throw e
             } catch (e: IOException) {
                 Outcome.Err(SourceError.Network)
+            } catch (e: RuntimeException) {
+                Outcome.Err(SourceError.Server(null))
             }
         }
 

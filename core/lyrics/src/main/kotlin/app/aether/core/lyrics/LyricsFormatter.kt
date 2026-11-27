@@ -23,18 +23,18 @@ import kotlin.math.roundToLong
  */
 object LyricsFormatter {
 
-    fun forPlayback(lyrics: Lyrics, durationMs: Long?): Lyrics {
+    fun forPlayback(lyrics: Lyrics, durationMs: Long?, title: String? = null): Lyrics {
         val duration = durationMs?.takeIf { it >= MIN_SONG_MS }
         return when (lyrics) {
             Lyrics.Instrumental -> lyrics
             is Lyrics.Plain -> duration?.let { pace(lyrics.lines, it) } ?: lyrics
-            is Lyrics.Synced -> repair(lyrics, duration)
+            is Lyrics.Synced -> repair(lyrics, duration, title)
         }
     }
 
     // --- Synced ------------------------------------------------------------------------------------
 
-    private fun repair(lyrics: Lyrics.Synced, duration: Long?): Lyrics {
+    private fun repair(lyrics: Lyrics.Synced, duration: Long?, title: String?): Lyrics {
         val sung = lyrics.lines.filter { it.text.isNotBlank() }
         if (sung.isEmpty()) return lyrics
         if (timesSayNothing(sung, duration)) {
@@ -42,6 +42,8 @@ object LyricsFormatter {
         }
         // A section label sung at a time is a pause, not words: it becomes a gap, keeping the timing.
         var lines = lyrics.lines.map { if (it.words.isEmpty() && isLabel(it.text)) it.copy(text = "") else it }
+        // So are the writers' names and the song's own name, set at the head of some files as if sung.
+        lines = withoutHead(lines, title)
         var repaired = false
         if (duration != null) {
             val last = lines.maxOf { it.startMs }
@@ -159,6 +161,63 @@ object LyricsFormatter {
     /** How long a line takes, relatively: a moment to start, then by its letters. */
     private fun weightOf(text: String): Double = 1.0 + text.count { it.isLetterOrDigit() } / LETTERS_PER_UNIT
 
+    /**
+     * The writers' names ("Andrew Watt/John Ryan/Ali Tamposi", QQ Music's files through LyricsPlus) and
+     * the song's own name ("Tum Hi Ho - Arijit Singh", KuGou's), which some files set at their head on a
+     * real stamp, as if sung: gaps, keeping the timing. Only before the first line that is sung, only the
+     * first few, and never so many that the song is left with fewer than two lines.
+     */
+    private fun withoutHead(lines: List<LyricsLine>, title: String?): List<LyricsLine> {
+        val out = lines.toMutableList()
+        var looked = 0
+        var cleared = 0
+        for (i in out.indices) {
+            val line = out[i]
+            if (line.text.isBlank()) continue
+            if (looked++ >= HEAD_LINES) break
+            if (!isCredit(line.text) && !(title != null && line.startMs < HEADING_BY_MS && isHeading(line.text, title))) break
+            out[i] = line.copy(text = "", words = emptyList(), background = null)
+            cleared++
+        }
+        if (cleared == 0) return lines
+        return if (out.count { it.text.isNotBlank() } >= 2) out else lines
+    }
+
+    /**
+     * Who wrote it, as a file credits it at its head: names run together with slashes, one at least a
+     * whole name and every word a name's ("Mikky Ekko/Justin Parker/Elof Loelv", not "Love/hate" or
+     * "Up/Down"), or a credit's own label ("Written by: …", "作词：…").
+     */
+    internal fun isCredit(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty()) return false
+        if (CREDIT_LABEL.matches(t)) return true
+        val names = t.split('/').map { it.trim() }
+        if (names.size < 2 || names.any { it.isEmpty() }) return false
+        val words = names.map { name -> name.split(' ').filter { it.isNotEmpty() } }
+        if (words.any { it.size !in 1..4 }) return false
+        return words.any { it.size >= 2 } && words.all { name -> name.all(::isNameWord) }
+    }
+
+    /** A word of a name: capitalised (or of a script without capitals), and letters, with a name's marks. */
+    private fun isNameWord(word: String): Boolean {
+        val first = word.first()
+        if (!first.isLetter() || first.isLowerCase()) return false
+        return word.all { it.isLetter() || it in NAME_MARKS }
+    }
+
+    /** "Tum Hi Ho - Arijit Singh (…)": the song's own name and artist, set before its words. */
+    internal fun isHeading(text: String, title: String): Boolean {
+        val parts = text.split(HEADING_DASH)
+        if (parts.size < 2 || parts.any { it.isBlank() }) return false
+        val wanted = key(title)
+        val bare = key(title.replace(BRACKETED_PART, " "))
+        if (wanted.isEmpty()) return false
+        return parts.any { part -> key(part) == wanted || (bare.isNotEmpty() && key(part.replace(BRACKETED_PART, " ")) == bare) }
+    }
+
+    private fun key(text: String): String = text.lowercase().filter { it.isLetterOrDigit() }
+
     /** "[Chorus]", "(Verse 2)", "Chorus:", "[Bridge: Name]" — labels, not lyrics. */
     internal fun isLabel(text: String): Boolean {
         val t = text.trim()
@@ -185,6 +244,18 @@ object LyricsFormatter {
     private val PHRASE_ENDS = setOf(',', ';', '.', '!', '?', ':')
 
     private const val MIN_SONG_MS = 20_000L
+
+    /** How many lines at a file's head may be its credits rather than its words. */
+    private const val HEAD_LINES = 3
+
+    /** A song's own name is set at the very start of the file, if anywhere. */
+    private const val HEADING_BY_MS = 1_000L
+    private const val NAME_MARKS = ".'’-$&"
+    private val HEADING_DASH = Regex("""\s+[-–—]\s+""")
+    private val BRACKETED_PART = Regex("""[(（\[].*?[)）\]]""")
+    private val CREDIT_LABEL = Regex(
+        """(?i)^(?:lyrics(?:\s+by)?|lyricist|written\s+by|writers?|composed\s+by|composers?|produced\s+by|producers?|arranged\s+by|arrangers?|作词|作曲|编曲|作詞|編曲|词|曲|制作人|监制)\s*[:：]\s*\S.*$""",
+    )
     private const val MIN_LINES_TO_JUDGE = 6
     private const val MIN_SPAN_FRACTION = 0.15
     private const val OVERRUN_TOLERANCE_MS = 5_000L

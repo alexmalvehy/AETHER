@@ -106,7 +106,15 @@ fun AlbumHero(page: AlbumPage, onArtist: (() -> Unit)?) {
             Box(Modifier.fillMaxSize().background(CoverFade))
         }
         Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Txt(album.title, Type.name(album.title, Type.Headline), align = TextAlign.Center, maxLines = 3, modifier = Modifier.padding(horizontal = 28.dp))
+            // An album's name is already set smaller than a room's: over several lines it gives up less.
+            app.aether.core.designsystem.component.FittedName(
+                album.title,
+                Type.name(album.title, Type.Headline),
+                maxLines = 3,
+                oneLineLeast = 0.8f,
+                severalLinesMost = 0.86f,
+                modifier = Modifier.padding(horizontal = 28.dp),
+            )
             val names = album.artists.joinToString(", ") { it.name }
             if (names.isNotEmpty()) {
                 // The same height with or without lettering, so nothing above it moves when it arrives.

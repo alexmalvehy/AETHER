@@ -8,7 +8,7 @@ import java.net.URI
  * Asks every lyrics library live for a few songs and says what each answered: `./gradlew
  * :core:lyrics:liveCheck`. Not a test: the services' answers change, and they're asked for real.
  */
-fun main() = runBlocking {
+fun main(args: Array<String>) = runBlocking {
     val http = object : LyricsHttp {
         override suspend fun get(url: String): Pair<Int, String> = reply(url).let { it.code to it.body }
         override suspend fun reply(url: String): LyricsHttp.Reply = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -28,7 +28,12 @@ fun main() = runBlocking {
         return@runBlocking
     }
     val libraries = listOf(LrcRed(http), BiniLyrics(http), BetterLyrics(http), LyricsPlus(http), Unison(http), LrclibProvider(http), KuGou(http))
-    val songs = listOf(
+    // Songs of your own: -Psongs="Title|Artist|seconds;Title|Artist|seconds"
+    val asked = args.firstOrNull()?.split(';')?.mapIndexedNotNull { i, s ->
+        val parts = s.split('|').map(String::trim)
+        if (parts.size < 2) null else LyricsRequest("asked$i", parts[0], parts[1], null, parts.getOrNull(2)?.toLongOrNull()?.times(1000))
+    }
+    val songs = asked ?: listOf(
         LyricsRequest("1", "Starboy", "The Weeknd, Daft Punk", "Starboy", 230_000),
         LyricsRequest("2", "Dynamite", "BTS", "Dynamite (DayTime Version)", 199_000),
         LyricsRequest("3", "봄날", "BTS", "YOU NEVER WALK ALONE", 274_000),
@@ -42,8 +47,8 @@ fun main() = runBlocking {
             val ms = System.currentTimeMillis() - started
             val what = when (answer) {
                 is ProviderAnswer.Found -> when (val l = answer.lyrics) {
-                    is Lyrics.Synced -> "${l.lines.count { it.text.isNotBlank() }} lines" + if (l.lines.any { it.words.isNotEmpty() }) ", word by word" else ", by the line" +
-                        "  “${l.lines.firstOrNull { it.text.isNotBlank() }?.text?.take(40)}”"
+                    is Lyrics.Synced -> "${l.lines.count { it.text.isNotBlank() }} lines" + (if (l.lines.any { it.words.isNotEmpty() }) ", word by word" else ", by the line") +
+                        "  “${l.lines.filter { it.text.isNotBlank() }.take(2).joinToString(" / ") { it.text.take(36) }}”"
                     is Lyrics.Plain -> "${l.lines.size} plain lines"
                     Lyrics.Instrumental -> "instrumental"
                 }

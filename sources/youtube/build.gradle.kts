@@ -16,6 +16,8 @@ kotlin {
 dependencies {
     api(project(":core:model"))
     api(project(":ytmusic"))
+    // PODIUM's title normaliser, to tell a music video's song from its covers and remixes.
+    implementation(project(":core:lyrics"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)

@@ -102,7 +102,7 @@ fun SleeveHead(title: String, detail: String?, artwork: Artwork, files: List<Fol
  * and the same key stops that.
  */
 @Composable
-fun SleeveActions(tracks: List<Track>, saved: Boolean?, onSave: (() -> Unit)?, follows: String? = null, keepKey: Boolean = true, third: (@Composable () -> Unit)? = null) {
+fun SleeveActions(tracks: List<Track>, saved: Boolean?, onSave: (() -> Unit)?, follows: String? = null, keepKey: Boolean = true, third: (@Composable () -> Unit)? = null, last: (@Composable () -> Unit)? = null) {
     val actions = LocalActions.current
     val container = LocalContainer.current
     val kept by container.downloads.entries.collectAsStateWithLifecycle()
@@ -139,6 +139,7 @@ fun SleeveActions(tracks: List<Track>, saved: Boolean?, onSave: (() -> Unit)?, f
             size = 50.dp,
             lit = done,
         )
+        last?.invoke()
     }
 }
 
@@ -251,13 +252,15 @@ private fun SleeveRow(track: Track, playing: Boolean, isPlaying: Boolean, first:
                 }
             }
         }
-        BasicText(
-            line,
-            Modifier.weight(1f),
-            style = RowStyle.copy(color = if (playing) Ink.White else Ink.White.copy(alpha = if (track.available) 0.88f else 0.35f)),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        val lineStyle = RowStyle.copy(color = if (playing) Ink.White else Ink.White.copy(alpha = if (track.available) 0.88f else 0.35f))
+        if (track.explicit) {
+            // The mark heads the song's name, in the grey of who made it (BitChord, Apple Music).
+            app.aether.core.designsystem.component.Marked(RowStyle, Modifier.weight(1f), markColor = if (track.available) Ink.Grey else Ink.Faint) {
+                BasicText(line, style = lineStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        } else {
+            BasicText(line, Modifier.weight(1f), style = lineStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
         // Whether it's on the phone: the arrow of keeping, grey when it's kept, dim while it's coming down.
         val kept = LocalContainer.current.downloads.entries.collectAsStateWithLifecycle().value[track.id]?.status
         when (kept) {
@@ -290,46 +293,4 @@ fun SleeveLabel(artwork: Artwork, title: String, by: String?, tracks: List<Track
             Txt(listOfNotNull(songCount(tracks.size), length).joinToString("  ·  "), Type.Label, color = Ink.Dim, upper = true, maxLines = 1)
         }
     }
-}
-
-/** The ways a playlist's songs can stand; [Added] only where the playlist knows when each came. */
-enum class SongOrder(val key: String, val label: String) {
-    Own("own", "Your order"), Title("title", "Title"), Artist("artist", "Artist"), Album("album", "Album"), Added("added", "Added"), Length("length", "Length");
-
-    companion object {
-        fun of(key: String?) = entries.firstOrNull { it.key == key } ?: Own
-    }
-}
-
-/**
- * The songs in [order]. Names compare as the phone's language does; songs without what's sorted on
- * go last; [added] ranks songs by when they came (larger is newer), newest first.
- */
-fun List<Track>.inOrder(order: SongOrder, added: ((Int) -> Long)? = null): List<Track> {
-    val words = java.text.Collator.getInstance().apply { strength = java.text.Collator.PRIMARY }
-    fun byText(key: (Track) -> String?) = withIndex().sortedWith { a, b ->
-        val x = key(a.value)?.takeIf { it.isNotBlank() }
-        val y = key(b.value)?.takeIf { it.isNotBlank() }
-        when {
-            x == null && y == null -> a.index - b.index
-            x == null -> 1
-            y == null -> -1
-            else -> words.compare(x, y).takeIf { it != 0 } ?: (a.index - b.index)
-        }
-    }.map { it.value }
-    return when (order) {
-        SongOrder.Own -> this
-        SongOrder.Title -> byText { it.title }
-        SongOrder.Artist -> byText { it.artistLine }
-        SongOrder.Album -> byText { it.album?.title }
-        SongOrder.Added -> if (added == null) this else withIndex().sortedByDescending { added(it.index) }.map { it.value }
-        SongOrder.Length -> withIndex().sortedWith(compareBy<IndexedValue<Track>> { it.value.durationMs == null }.thenBy { it.value.durationMs ?: 0L }.thenBy { it.index }).map { it.value }
-    }
-}
-
-/** The choice of order, in the tab bar's glass: one tap, the lit drop sliding to it. */
-@Composable
-fun SongOrderBar(order: SongOrder, onOrder: (SongOrder) -> Unit, withAdded: Boolean, modifier: Modifier = Modifier) {
-    val choices = SongOrder.entries.filter { withAdded || it != SongOrder.Added }
-    app.aether.core.designsystem.component.GlassSegments(choices.map { it.label }, choices.indexOf(order).coerceAtLeast(0), { onOrder(choices[it]) }, modifier)
 }

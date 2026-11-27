@@ -60,16 +60,18 @@ class Catalog(private val ttlMs: Long = 15 * 60 * 1000L, private val capacity: I
 
 /**
  * Loads [key]'s data once (or takes it from the catalog), and offers a retry. The state survives
- * recomposition; leaving and coming back reads the catalog.
+ * recomposition; leaving and coming back reads the catalog. Not [enabled], nothing is asked for
+ * (what's already in the catalog still shows).
  */
 @Composable
-fun <T> rememberLoad(key: String, load: suspend () -> Outcome<T>): Pair<Load<T>, () -> Unit> {
+fun <T> rememberLoad(key: String, enabled: Boolean = true, load: suspend () -> Outcome<T>): Pair<Load<T>, () -> Unit> {
     val catalog = LocalContainer.current.catalog
     val attempt = remember(key) { mutableIntStateOf(0) }
     val state: MutableState<Load<T>> = remember(key) {
         mutableStateOf(catalog.peek<T>(key)?.let { Load.Ready(it) } ?: Load.Loading)
     }
-    LaunchedEffect(key, attempt.intValue) {
+    LaunchedEffect(key, attempt.intValue, enabled) {
+        if (!enabled) return@LaunchedEffect
         if (state.value is Load.Ready && attempt.intValue == 0) return@LaunchedEffect
         state.value = Load.Loading
         state.value = when (val r = load()) {

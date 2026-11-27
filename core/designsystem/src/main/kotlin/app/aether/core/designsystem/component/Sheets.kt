@@ -2,10 +2,12 @@
 
 package app.aether.core.designsystem.component
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.SpringSpec
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -75,7 +77,13 @@ import kotlinx.coroutines.launch
  * where it is. A sheet pulled past open stretches with Apple's rubber band.
  */
 @Stable
-class DragState internal constructor(private val scope: CoroutineScope, private val give: Float, private val flick: Float) {
+class DragState internal constructor(
+    private val scope: CoroutineScope,
+    private val give: Float,
+    private val flick: Float,
+    private val openSpring: SpringSpec<Float> = OpenSpring,
+    private val closeSpring: SpringSpec<Float> = CloseSpring,
+) {
     private val anim = Animatable(0f)
     private var held by mutableFloatStateOf(0f)
     private var raw = 0f
@@ -89,6 +97,14 @@ class DragState internal constructor(private val scope: CoroutineScope, private 
     /** How far a full open is, in pixels: the sheet's height, or the screen's for Now Playing. */
     var travelPx by mutableFloatStateOf(1f)
 
+    /**
+     * Read instead of [travelPx] when it gives more than a pixel: for what opens out of something that
+     * moves (Now Playing grows out of the mini player, which rises and sinks as the dock folds).
+     */
+    var travel: (() -> Float)? = null
+
+    private fun distance(): Float = travel?.invoke()?.takeIf { it > 1f } ?: travelPx
+
 
     /** 0 closed, 1 open. */
     val value: Float get() = if (holding) held else anim.value
@@ -96,13 +112,35 @@ class DragState internal constructor(private val scope: CoroutineScope, private 
     /** Where it's going: where the finger has it, or where its spring is taking it. */
     val target: Float get() = if (holding) held else anim.targetValue
 
+    /**
+     * Closed, and staying closed while it settles. A spring with a bounce (Now Playing's, landing back
+     * in the pill) carries a little past closed and swings back, and swinging back it rose over the
+     * line again: what had just gone showed for a frame, and went (a flicker of the island over the
+     * pill). Once a close has taken it under the line it stays shut until it's opened again: a show, a
+     * finger, a turn.
+     */
+    private var shut by mutableStateOf(false)
+
     // Read while composing, "is it showing" changes twice an opening, not every frame of it: a
     // screen asking it isn't composed again on each frame the sheet moves.
-    private val shown = derivedStateOf { value > 0.0005f }
+    private val shown = derivedStateOf { value > ShownFrom && !shut }
     val visible: Boolean get() = shown.value
 
-    fun show() = animate(1f, 0f)
-    fun hide() = animate(0f, 0f)
+    /** Opens it; caught on its way, it turns round from where it is, at the speed it had. */
+    fun show() = animate(1f, null)
+
+    /** Closes it, the same way. */
+    fun hide() = animate(0f, null)
+
+    /** Gone at once, with nothing moving: for a sheet whose screen has already left. */
+    fun dismiss() {
+        settling?.cancel()
+        shut = false
+        holding = false
+        raw = 0f
+        held = 0f
+        settling = scope.launch(start = CoroutineStart.UNDISPATCHED) { anim.snapTo(0f) }
+    }
 
     /** [dy] in pixels, down positive: dragging down closes, up opens. Applied at once. */
     fun dragBy(dy: Float) {
@@ -113,9 +151,10 @@ class DragState internal constructor(private val scope: CoroutineScope, private 
             startedOpen = anim.value > 0.5f
             raw = anim.value
             held = raw
+            shut = false
             holding = true
         }
-        raw = (raw - dy / travelPx).coerceAtLeast(0f)
+        raw = (raw - dy / distance()).coerceAtLeast(0f)
         // Pulled past open, it stays open: a sheet is as tall as it is, and no taller.
         held = raw.coerceAtMost(1f)
         if (raw > 1f) raw = 1f
@@ -128,7 +167,7 @@ class DragState internal constructor(private val scope: CoroutineScope, private 
      * Either way the spring starts at the finger's speed.
      */
     fun settle(velocityY: Float) {
-        val velocity = -velocityY / travelPx
+        val velocity = -velocityY / distance()
         val target = when {
             velocity < -flick -> 0f
             velocity > flick -> 1f
@@ -138,32 +177,53 @@ class DragState internal constructor(private val scope: CoroutineScope, private 
         animate(target, velocity)
     }
 
-    private fun animate(to: Float, velocity: Float) {
+    /**
+     * Springs to [to]. With a finger's [velocity] (a release), from where the finger left it; without
+     * one (a key, Back), from where its spring has it, at the speed it's going: a turn mid-flight keeps
+     * its momentum instead of starting again from rest.
+     */
+    private fun animate(to: Float, velocity: Float?) {
         val from = value
+        val wasHeld = holding
+        val carried = velocity ?: if (wasHeld) 0f else anim.velocity
         settling?.cancel()
+        if (to > 0f) shut = false
         settling = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            anim.snapTo(from)
+            // Only a finger's place has to be handed to the spring; a spring already in flight is where it is.
+            if (wasHeld || velocity != null) anim.snapTo(from)
             if (!isActive) return@launch
             holding = false
-            anim.animateTo(to, if (to >= 1f) OpenSpring else CloseSpring, initialVelocity = velocity)
+            anim.animateTo(to, if (to >= 1f) openSpring else closeSpring, initialVelocity = carried) {
+                // Closing, the frame it first goes under the line is the frame it's gone, bounce or none.
+                if (to <= 0f && value <= ShownFrom) shut = true
+            }
         }
     }
 
-    private companion object {
+    companion object {
+        /** Over this, it's showing. */
+        internal const val ShownFrom = 0.0005f
+
         /** Opening comes to rest with a cushion; closing doesn't bounce. */
-        val OpenSpring = Motion.fluid(0.44f, 0.86f, 0.0008f)
-        val CloseSpring = Motion.fluid(0.4f, 1f, 0.0008f)
+        val OpenSpring: SpringSpec<Float> = Motion.fluid(0.44f, 0.86f, 0.0008f)
+        val CloseSpring: SpringSpec<Float> = Motion.fluid(0.4f, 1f, 0.0008f)
     }
 }
 
 /**
  * [give] is how much of the travel has to be pulled for it to go, and [flick] how fast (of the whole
- * travel, a second) a throw has to be to go however short it was.
+ * travel, a second) a throw has to be to go however short it was. [open] and [close] are the springs
+ * it goes on.
  */
 @Composable
-fun rememberDragState(give: Float = 0.5f, flick: Float = 0.55f): DragState {
+fun rememberDragState(
+    give: Float = 0.5f,
+    flick: Float = 0.55f,
+    open: SpringSpec<Float> = DragState.OpenSpring,
+    close: SpringSpec<Float> = DragState.CloseSpring,
+): DragState {
     val scope = rememberCoroutineScope()
-    return remember { DragState(scope, give, flick) }
+    return remember { DragState(scope, give, flick, open, close) }
 }
 
 /** What fills the screen is a long way to pull: it goes after a fifth of it, or on a light throw. */
@@ -193,13 +253,18 @@ fun Modifier.dragsOpen(state: DragState): Modifier = this.pointerInput(state) {
 /**
  * For a pane with a list in it: the list scrolls first; once it's at its top, the rest of a pull
  * down takes the pane with it, and a pane not fully open opens before its list scrolls (iOS's
- * sheet). A flick that ends a pull lands the pane.
+ * sheet). A flick that ends a pull lands the pane. Once the pane has the finger, it keeps it, both
+ * ways, until it's let go.
+ *
+ * [pullsFirst]: a pull down that starts while this is true takes the pane wherever it starts, before
+ * the list scrolls (the lyrics, while their page follows the song: nothing there is being read back).
  */
 @Composable
-fun rememberSheetScroll(state: DragState): NestedScrollConnection = remember(state) {
+fun rememberSheetScroll(state: DragState, pullsFirst: () -> Boolean = { false }): NestedScrollConnection = remember(state) {
     object : NestedScrollConnection {
         override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-            if (available.y < 0f && (state.holding || state.value < 1f) && source == NestedScrollSource.UserInput) {
+            if (source != NestedScrollSource.UserInput) return Offset.Zero
+            if (state.holding || (available.y < 0f && state.value < 1f) || (available.y > 0f && pullsFirst())) {
                 state.dragBy(available.y)
                 return Offset(0f, available.y)
             }
@@ -269,6 +334,9 @@ fun DragSheet(state: DragState, height: Dp = 620.dp, onClosed: () -> Unit = {}, 
         }
     }
     if (!state.visible) return
+    // Back closes the sheet on top, not what's under it (Up Next used to take Now Playing with it).
+    // Only while it's open or opening: a second Back as it closes goes on to what's beneath.
+    BackHandler(enabled = state.target > 0f) { state.hide() }
     val nested = rememberSheetScroll(state)
     Box(Modifier.fillMaxSize()) {
         val travelPx = with(density) { height.toPx() }

@@ -10,6 +10,62 @@ import kotlin.test.assertTrue
 class VerseModelTest {
     private fun word(start: Long, text: String, end: Long? = null, syllables: List<LyricsSyllable> = emptyList()) = LyricsWord(start, text, end, syllables)
 
+    /** A stand-in for the phone's Latin letters: each script word to its reading, anything else left alone. */
+    private val reading = mapOf("사랑해" to "saranghae", "너를" to "neoreul", "我" to "wǒ", "爱" to "ài", "你" to "nǐ", "오" to "o")
+    private val romanise: (String) -> String? = { reading[it] }
+
+    @Test
+    fun `Latin first, each word is sung in Latin letters over its own time`() {
+        val line = LyricsLine(1_000, "너를 사랑해", words = listOf(word(1_000, "너를", 1_400), word(1_500, "사랑해", 2_400)))
+        val v = VLine.of(listOf(line)).single()
+        val latin = VLine.latin(v, "neoreul saranghae", romanise)
+        assertEquals("neoreul saranghae", latin.text)
+        assertEquals(listOf("neoreul", "saranghae"), latin.words.map { it.text })
+        assertEquals(listOf(1_000L to 1_400L, 1_500L to 2_400L), latin.words.map { it.startMs to it.endMs })
+        assertTrue(latin.isWordSynced)
+        // Half way through the second word, half of "saranghae" is lit, after all of "neoreul " .
+        assertEquals("neoreul ".length + "saranghae".length / 2f, latin.revealedChars(1_950), 0.01f)
+        assertEquals(v.timeMs, latin.timeMs)
+        assertEquals(v.endMs, latin.endMs)
+    }
+
+    @Test
+    fun `Latin first, the words in their own script go beneath, lit as the Latin letters are`() {
+        val line = LyricsLine(0, "我爱你", words = listOf(word(0, "我", 300), word(300, "爱", 600), word(600, "你", 900)))
+        val latin = VLine.latin(VLine.of(listOf(line)).single(), "wǒ ài nǐ", romanise)
+        assertEquals("wǒ ài nǐ", latin.text)
+        val beneath = VLine.gloss("我爱你", latin)
+        // When "ài" is done, two of the three characters beneath are lit.
+        val done = latin.revealedChars(600) / latin.text.length
+        assertEquals(done * 3, beneath.revealedChars(600), 0.01f)
+    }
+
+    @Test
+    fun `Latin first, a word with nothing to change keeps its own letters, and punctuation keeps to its word`() {
+        val line = LyricsLine(0, "오 baby ,", words = listOf(word(0, "오", 300), word(300, "baby", 600), word(600, ",", 700)))
+        val latin = VLine.latin(VLine.of(listOf(line)).single(), "o baby,", romanise)
+        assertEquals("o baby,", latin.text)
+        assertEquals(listOf("o", "baby", ","), latin.words.map { it.text })
+        assertEquals(listOf(0 until 1, 2 until 6, 6 until 7), latin.wordSpans)
+    }
+
+    @Test
+    fun `Latin first, a line timed whole is the line's Latin letters, lit whole`() {
+        val line = LyricsLine(1_000, "사랑해")
+        val latin = VLine.latin(VLine.of(listOf(line)).single(), "saranghae", romanise)
+        assertEquals("saranghae", latin.text)
+        assertTrue(latin.words.isEmpty())
+        assertEquals("saranghae".length.toFloat(), latin.revealedChars(1_000))
+    }
+
+    @Test
+    fun `Latin first, the answering vocal is given in Latin letters too`() {
+        val line = LyricsLine(0, "너를", words = listOf(word(0, "너를", 500)), background = LyricsLine(200, "(사랑해)", words = listOf(word(200, "(사랑해)", 800))))
+        val latin = VLine.latin(VLine.of(listOf(line)).single(), "neoreul", romanise)
+        assertEquals("saranghae", latin.background?.text)
+        assertEquals(listOf(200L to 800L), latin.background?.words?.map { it.startMs to it.endMs })
+    }
+
     @Test
     fun `Chinese sung a character at a time keeps its own text, with no spaces put in`() {
         val line = LyricsLine(1_000, "我爱你", words = listOf(word(1_000, "我", 1_300), word(1_300, "爱", 1_600), word(1_600, "你", 2_000)))

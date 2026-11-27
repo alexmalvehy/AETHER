@@ -43,6 +43,21 @@ class PlaybackConnection(private val context: Context, private val scope: Corout
      */
     val position: StateFlow<Long> = _position.asStateFlow()
 
+    /** Where in the playing song Automix will run into the next, as fractions of it; null when it won't. */
+    val automixWindow: StateFlow<app.aether.automix.TransitionWindow?> get() = AutomixState.smartTransitionWindow
+
+    /** A real mix is playing (one a plain crossfade couldn't be): the note at the bottom says so. */
+    val automixing: StateFlow<Boolean> get() = AutomixState.smartMixInProgress
+
+    /** The song Automix is bringing in now: in Up Next it stays where it is until it plays. */
+    val automixIncoming: StateFlow<String?> get() = AutomixState.incoming
+
+    /** The pair Automix has planned for the playing song, while its window shows. */
+    val automixPlanned: StateFlow<Pair<String, String>?> get() = AutomixState.planned
+
+    /** Any Automix transition in flight, and how far through: the cover's morph follows it. */
+    val automixBlend: StateFlow<Blend?> get() = AutomixState.blend
+
     /** Where the music is this instant, for what's drawn frame by frame ([position] moves four times a second). */
     fun positionNow(): Long = controller?.currentPosition?.coerceAtLeast(0) ?: _position.value
 
@@ -149,6 +164,14 @@ class PlaybackConnection(private val context: Context, private val scope: Corout
 
     fun setShuffle(on: Boolean) = with { c -> c.shuffleModeEnabled = on }
 
+    fun setRepeat(mode: app.aether.core.model.RepeatMode) = with { c ->
+        c.repeatMode = when (mode) {
+            app.aether.core.model.RepeatMode.ALL -> Player.REPEAT_MODE_ALL
+            app.aether.core.model.RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+            else -> Player.REPEAT_MODE_OFF
+        }
+    }
+
     fun cycleRepeat() = with { c ->
         c.repeatMode = when (c.repeatMode) {
             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
@@ -159,8 +182,26 @@ class PlaybackConnection(private val context: Context, private val scope: Corout
 
     // --- State ---
 
+    /** Tracks already read from the session, by song, with what they were read from. */
+    private val known = HashMap<String, Pair<String, Track>>()
+
+    /**
+     * The queue as the session has it. A song read before, with the same name, artist and length, is
+     * the same [Track] (reading one is unpacking its whole bundle off the session); a queue that came
+     * out the same is the same list, so nothing that shows it is asked again.
+     */
     private fun rebuildQueue(c: MediaController) {
-        queue = (0 until c.mediaItemCount).mapNotNull { c.getMediaItemAt(it).toTrack() }
+        val seen = HashSet<String>()
+        val next = (0 until c.mediaItemCount).mapNotNull { i ->
+            val item = c.getMediaItemAt(i)
+            val meta = item.mediaMetadata
+            val mark = "${meta.title}\u0000${meta.artist}\u0000${meta.durationMs}"
+            seen += item.mediaId
+            known[item.mediaId]?.takeIf { it.first == mark }?.second
+                ?: item.toTrack()?.also { known[item.mediaId] = mark to it }
+        }
+        known.keys.retainAll(seen)
+        if (next != queue) queue = next
     }
 
     private fun publish() {
@@ -175,7 +216,7 @@ class PlaybackConnection(private val context: Context, private val scope: Corout
             c.playbackState == Player.STATE_IDLE -> PlaybackStatus.PAUSED
             else -> PlaybackStatus.PAUSED
         }
-        _state.value = PlaybackState(
+        val next = PlaybackState(
             status = status,
             queue = queue,
             index = if (c.mediaItemCount == 0) -1 else c.currentMediaItemIndex,
@@ -194,6 +235,11 @@ class PlaybackConnection(private val context: Context, private val scope: Corout
             outputDevice = route.getString(EXTRA_OUTPUT),
             bitPerfect = route.getBoolean(EXTRA_BIT_PERFECT, false),
         )
+        // Where the song is moves on its own flow ([position]): an event that changed nothing but the
+        // position or how much is buffered (the player reports one each time it loads a little more)
+        // isn't a new state, so it doesn't ask every screen showing the song to be composed again.
+        val now = _state.value
+        if (next.copy(positionMs = now.positionMs, bufferedMs = now.bufferedMs) != now) _state.value = next
         _position.value = c.currentPosition.coerceAtLeast(0)
         ensureTicker(c)
     }

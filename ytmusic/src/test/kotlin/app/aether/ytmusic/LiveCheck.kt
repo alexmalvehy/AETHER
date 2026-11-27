@@ -53,6 +53,11 @@ fun main(args: Array<String>) = runBlocking {
     }
     check("search", { yt.search("arijit singh") }, { "${it.items.size} results, filters ${it.filters.map(SearchFilter::label)}" }, { it.items.isEmpty() })
     check("suggestions", { yt.suggestions("arijit") }, { "${it.queries.size} queries, ${it.items.size} items" }, { it.queries.isEmpty() })
+    // Songs alone, as search asks for them beside the mixed answer, with the filter AETHER writes itself.
+    check("songs alone", { yt.searchSongs("not like us kendrick lamar") }, { p ->
+        val songs = p.items.filterIsInstance<Song>()
+        "${songs.size} songs, ${songs.count { it.explicit }} marked explicit, ${songs.count { it.durationMs != null }} with a length, more: ${p.continuation != null}"
+    }, { p -> p.items.filterIsInstance<Song>().let { s -> s.size < 5 || s.none { it.explicit } } })
     // A song found by searching is followed by its radio: what's like it, not what shares its name.
     val found = yt.search("tum hi ho").getOrNull()?.items?.filterIsInstance<Song>()
     found?.firstOrNull()?.let { s ->

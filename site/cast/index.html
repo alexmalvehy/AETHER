@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AETHER</title>
+  <!--
+    AETHER on a TV: the receiver a phone casts to (Google Cast). Now Playing, turned on its side: the
+    print in the middle, the song at its foot on the left, the dial standing on the right edge; and the
+    words, full screen, when the remote asks for them. What plays comes from the phone, over the room's
+    Wi-Fi; what's shown with it (the song, its cover or its film, its words) comes from the phone too,
+    over the cast's own channel. Nothing here is fetched from anyone but the phone, the covers' and
+    films' own hosts, and Google's Cast library, which a receiver has to run.
+    ?preview shows it with stand-in words and pictures, for designing it on a computer.
+  -->
+  <link rel="preload" href="../assets/fonts/pinyon-script.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../assets/fonts/eb-garamond.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../assets/fonts/montserrat.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="cast.css">
+</head>
+<body>
+  <!-- The music itself, played by Google's player; seen nowhere: the stage is AETHER's. -->
+  <cast-media-player id="player"></cast-media-player>
+
+  <main id="stage" class="stage">
+    <!-- Far behind everything: the cover's light, and the shade that grounds the foot. -->
+    <div class="ground">
+      <canvas id="soft" class="soft" width="48" height="48"></canvas>
+      <div class="shade"></div>
+    </div>
+
+    <!-- The cover's own film, across the whole screen, gone to nothing in arcs round the dial. -->
+    <div id="film" class="film">
+      <video id="filmVideo" muted playsinline loop disablepictureinpicture></video>
+      <div class="under-name"></div>
+      <div class="under-song"></div>
+      <div class="round-dial"></div>
+    </div>
+
+    <div id="mark" class="mark">Aether</div>
+
+    <div id="heading" class="heading">
+      <div class="label">Now playing</div>
+      <div id="place" class="meta"></div>
+    </div>
+
+    <!-- The print: the cover, 4:5, its newest sheet wiped in over those beneath. -->
+    <section id="print" class="print">
+      <div id="sheets" class="sheets"></div>
+      <div id="micro" class="micro"></div>
+    </section>
+
+    <section id="song" class="song">
+      <h1 id="title" class="title"></h1>
+      <div id="aside" class="aside"></div>
+      <div id="artist" class="artist"></div>
+      <div id="format" class="format"></div>
+    </section>
+
+    <section id="dialBox" class="dial">
+      <canvas id="dial"></canvas>
+      <div class="time">
+        <div id="now" class="now"></div>
+        <div id="left" class="left"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- The words, full screen: the song's name in the corner, its words, where they're from. -->
+  <section id="lyrics" class="lyrics">
+    <div id="words" class="page"><div id="lines" class="lines"></div></div>
+    <div class="fade-top"></div>
+    <div class="fade-foot"></div>
+    <div id="lyricsName" class="lyrics-name"></div>
+    <div id="credit" class="credit"></div>
+  </section>
+
+  <!-- The one key, in the dial's heart as the phone keeps its keys there: the words, from the TV's remote. -->
+  <div id="keyWord" class="key-word">Lyrics</div>
+  <button id="lyricsKey" class="key" type="button" aria-label="Lyrics" aria-pressed="false" tabindex="0">
+    <span class="lit"></span>
+    <!-- The app's own mark for the words (Phosphor's quotes, Light; MIT, as core/designsystem draws it). -->
+    <svg viewBox="0 0 256 256" aria-hidden="true">
+      <path d="M100,58H40A14,14,0,0,0,26,72v64a14,14,0,0,0,14,14h62v10a34,34,0,0,1-34,34,6,6,0,0,0,0,12,46.06,46.06,0,0,0,46-46V72A14,14,0,0,0,100,58Zm2,80H40a2,2,0,0,1-2-2V72a2,2,0,0,1,2-2h60a2,2,0,0,1,2,2ZM216,58H156a14,14,0,0,0-14,14v64a14,14,0,0,0,14,14h62v10a34,34,0,0,1-34,34,6,6,0,0,0,0,12,46.06,46.06,0,0,0,46-46V72A14,14,0,0,0,216,58Zm2,80H156a2,2,0,0,1-2-2V72a2,2,0,0,1,2-2h60a2,2,0,0,1,2,2Z" />
+    </svg>
+  </button>
+
+  <!-- What the TV shows while it waits (the name on black), and the song arriving through it. -->
+  <canvas id="veil" class="veil"></canvas>
+
+  <script src="vendor/hls.light.min.js"></script>
+  <!-- Google's receiver library is loaded by cast.js, on a TV only. -->
+  <script src="cast.js"></script>
+</body>
+</html>

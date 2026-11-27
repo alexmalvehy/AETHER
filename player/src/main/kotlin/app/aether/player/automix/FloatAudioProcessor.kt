@@ -1,0 +1,48 @@
+// AETHER: BitChord's Automix (app/src/main/java/com/music/bitchord/playback/audio/FloatAudioProcessor.kt, github.com/kushagrasinghx/BitChord),
+// ported with its notices below; only its package and its ties to BitChord's app are changed.
+package app.aether.player.automix
+
+import app.aether.automix.*
+
+/**
+ * Common contract for high-precision, in-place Float32 audio DSP processors.
+ *
+ * Processors operate directly on canonical [AudioBlock] instances holding normalized
+ * IEEE 754 32-bit floats, avoiding intermediate fixed-point quantization and preserving
+ * dynamic headroom throughout the DSP pipeline.
+ */
+interface FloatAudioProcessor {
+    /**
+     * Configures the processor for the specified [sampleRate] and [channelCount].
+     */
+    fun configure(sampleRate: Int, channelCount: Int = AudioBlock.DEFAULT_CHANNELS)
+
+    /**
+     * Processes audio frames in [block] in-place.
+     *
+     * @param block Reusable AudioBlock containing interleaved normalized Float32 samples.
+     */
+    fun process(block: AudioBlock)
+
+    /**
+     * Flushes internal filter states and histories (e.g. on seek or stream boundary).
+     */
+    fun flush()
+
+    /**
+     * Resets internal states and releases sample buffers.
+     */
+    fun reset()
+}
+
+/** Adapts [TransitionFilterProcessor] to [FloatAudioProcessor]. */
+fun TransitionFilterProcessor.asFloatAudioProcessor(): FloatAudioProcessor =
+    object : FloatAudioProcessor {
+        override fun configure(sampleRate: Int, channelCount: Int) =
+            this@asFloatAudioProcessor.configure(sampleRate, channelCount)
+        override fun process(block: AudioBlock) =
+            this@asFloatAudioProcessor.process(block)
+        @Suppress("DEPRECATION")
+        override fun flush() = this@asFloatAudioProcessor.flush()
+        override fun reset() = this@asFloatAudioProcessor.reset()
+    }

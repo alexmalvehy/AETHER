@@ -213,7 +213,7 @@ private fun Head(name: String, stats: ProfileStats?, photo: Artwork, onName: () 
             Spacer(Modifier.height(16.dp))
         }
         Row(Modifier.quietClick(onName), verticalAlignment = Alignment.CenterVertically) {
-            Txt(name, Type.name(name), align = TextAlign.Center, maxLines = 2, modifier = Modifier.weight(1f, fill = false))
+            app.aether.core.designsystem.component.FittedName(name, Type.name(name), maxLines = 2, modifier = Modifier.weight(1f, fill = false))
             Spacer(Modifier.width(12.dp))
             Icon(Glyph.Edit, size = 16.dp, color = Ink.Grey)
         }

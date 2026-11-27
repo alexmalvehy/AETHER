@@ -1,35 +1,26 @@
 // After PODIUM's AudioMeter (player/service, D-82, GPL-3.0): only its loudness of the whole signal,
 // which is what lines a carried copy up with its song (SoundAlignment, D-96).
-@file:OptIn(UnstableApi::class)
-
 package app.aether.player
 
-import androidx.annotation.OptIn
-import androidx.media3.common.C
-import androidx.media3.common.audio.AudioProcessor
-import androidx.media3.common.audio.BaseAudioProcessor
-import androidx.media3.common.util.UnstableApi
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import app.aether.player.automix.AudioBlock
+import app.aether.player.automix.FloatAudioProcessor
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.sqrt
 
 /**
- * How loud the music is, 10 ms at a time, stamped with where in the song each 10 ms is: a step in the
- * player's audio path that changes nothing (every byte goes out as it came in) and measures only while
- * something [listen]s, which is only while two copies of a song are being lined up.
+ * How loud the music is, 10 ms at a time, stamped with where in the song each 10 ms is: the last step
+ * of the sound path, which changes nothing and measures only while something [listen]s, which is only
+ * while two copies of a song are being lined up.
  *
  * - Mixed to mono and measured as RMS over 10 ms blocks.
- * - Each block is stamped with its place in the song: the sink tells every flush where the stream starts
- *   ([AudioProcessor.StreamMetadata.positionOffsetUs]), and the blocks count on from there, so a reader
- *   asks by song position ([levelAt]) and the reading lines up with the sound.
+ * - Each block is stamped with its place in the song: the sink says where each stream starts
+ *   ([onStreamStart], what Media3 hands its own processors as `positionOffsetUs`), and the blocks count
+ *   on from there, so a reader asks by song position ([levelAt]) and the reading lines up with the sound.
  * - A flush (a seek, a new stream) starts the record afresh.
  * - Written on the playback thread, read on the main thread, without locks: blocks are published by the
  *   volatile counter, and a reading from before a flush is refused by its generation.
- *
- * 16-bit and float audio; anything else passes by unmeasured.
  */
-internal class AudioMeter : BaseAudioProcessor() {
+internal class AudioMeter : FloatAudioProcessor {
     private val starts = LongArray(CAPACITY)
     private val levels = FloatArray(CAPACITY)
     @Volatile private var written = 0L
@@ -39,7 +30,6 @@ internal class AudioMeter : BaseAudioProcessor() {
 
     private var sampleRate = 0
     private var channels = 0
-    private var encoding = C.ENCODING_INVALID
     private var blockFrames = 0
     private var offsetUs = 0L
     private var frames = 0L
@@ -58,45 +48,41 @@ internal class AudioMeter : BaseAudioProcessor() {
         }
     }
 
-    override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
+    override fun configure(sampleRate: Int, channelCount: Int) {
         forget()
-        if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT && inputAudioFormat.encoding != C.ENCODING_PCM_FLOAT) {
-            return AudioProcessor.AudioFormat.NOT_SET
-        }
-        sampleRate = inputAudioFormat.sampleRate
-        channels = inputAudioFormat.channelCount
-        encoding = inputAudioFormat.encoding
+        this.sampleRate = sampleRate
+        channels = channelCount
         blockFrames = (sampleRate * BLOCK_MS / 1000).coerceAtLeast(1)
-        blockUs = blockFrames * 1_000_000L / sampleRate
-        return inputAudioFormat
+        blockUs = blockFrames * 1_000_000L / sampleRate.coerceAtLeast(1)
     }
 
-    override fun queueInput(inputBuffer: ByteBuffer) {
-        val bytes = inputBuffer.remaining()
-        if (bytes == 0) return
+    /** The stream starts afresh at [positionOffsetUs] in the song: a seek, or a new song. */
+    fun onStreamStart(positionOffsetUs: Long) {
+        forget()
+        offsetUs = positionOffsetUs
+    }
+
+    override fun process(block: AudioBlock) {
+        val count = block.frameCount
+        if (count == 0 || channels <= 0 || sampleRate <= 0) return
         if (listeners.get() > 0) {
-            measure(inputBuffer.duplicate().order(ByteOrder.nativeOrder()))
+            measure(block)
         } else {
             // Nobody listening: only the song position counts on, so listening can start mid-stream.
-            frames += bytes / frameBytes().coerceAtLeast(1)
+            frames += count
             inBlock = 0
             sum = 0.0
         }
-        val out = replaceOutputBuffer(bytes)
-        out.put(inputBuffer)
-        out.flip()
     }
 
-    private fun frameBytes(): Int = channels * if (encoding == C.ENCODING_PCM_16BIT) 2 else 4
-
-    private fun measure(input: ByteBuffer) {
-        if (channels <= 0) return
-        val sixteen = encoding == C.ENCODING_PCM_16BIT
-        val frameBytes = frameBytes()
-        while (input.remaining() >= frameBytes) {
+    private fun measure(block: AudioBlock) {
+        val samples = block.samples
+        val count = block.channelCount
+        var i = 0
+        for (frame in 0 until block.frameCount) {
             var mono = 0f
-            for (ch in 0 until channels) mono += if (sixteen) input.getShort() / 32768f else input.getFloat()
-            mono /= channels
+            for (ch in 0 until count) mono += samples[i++]
+            mono /= count
             sum += (mono * mono).toDouble()
             frames++
             if (++inBlock == blockFrames) {
@@ -115,16 +101,12 @@ internal class AudioMeter : BaseAudioProcessor() {
         written = n + 1
     }
 
-    override fun onFlush(streamMetadata: AudioProcessor.StreamMetadata) {
-        forget()
-        offsetUs = streamMetadata.positionOffsetUs
-    }
+    override fun flush() = forget()
 
-    override fun onReset() {
+    override fun reset() {
         forget()
         sampleRate = 0
         channels = 0
-        encoding = C.ENCODING_INVALID
     }
 
     private fun forget() {

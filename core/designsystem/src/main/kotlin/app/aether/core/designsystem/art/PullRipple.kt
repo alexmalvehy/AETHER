@@ -38,6 +38,14 @@ private const val PULL_RIPPLE = """
     uniform float glow;
     uniform float shine;
 
+    // How far a point gives way toward an edge [room] away: as far as it's pushed while there's room,
+    // then less and less (tanh), never past it.
+    float pinned(float v, float room) {
+        float r = max(room, 0.001);
+        float e = exp(-2.0 * abs(v) / r);
+        return sign(v) * r * (1.0 - e) / (1.0 + e);
+    }
+
     half4 main(float2 p) {
         float2 d = p - origin;
         float dist = length(d);
@@ -46,7 +54,12 @@ private const val PULL_RIPPLE = """
         float envelope = exp(-decay * t);
         float swing = sin(frequency * t);
         float reach = exp(-dist / (size.y * 0.5));
-        half4 c = content.eval(p + n * (amplitude * swing * envelope + pull * size.y * 0.1 * reach));
+        float2 v = n * (amplitude * swing * envelope + pull * size.y * 0.1 * reach);
+        // The sheet is held at the screen's edges, as the screen itself would be: it stretches toward
+        // them instead of coming away from them, so no gap ever opens onto what's beneath it.
+        float2 room = float2(v.x < 0.0 ? p.x : size.x - p.x, v.y < 0.0 ? p.y : size.y - p.y);
+        float2 from = clamp(p + float2(pinned(v.x, room.x), pinned(v.y, room.y)), float2(0.5), size - float2(0.5));
+        half4 c = content.eval(from);
         // Only the very top of the wave catches the light, so it's a rim and not a wash.
         float crest = amplitude > 0.0 ? pow(max(swing, 0.0), 5.0) * envelope : 0.0;
         float mouth = glow * exp(-(dist * dist) / (size.x * size.x * 0.18));

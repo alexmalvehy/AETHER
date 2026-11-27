@@ -1,5 +1,6 @@
 package app.aether.ui.detail
 
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import android.content.Context
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
@@ -167,10 +168,11 @@ fun ArtistHero(page: ArtistPage) {
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Black.copy(alpha = 0.5f), 0.35f to Color.Transparent, 1f to Color.Black)))
         Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box(contentAlignment = Alignment.BottomCenter) {
-                Txt(
+                // As large as the screen allows, whole words only: "PinkPantheress" shrinks to fit rather
+                // than leaving "ss" alone on a line, and a name of several words is set smaller.
+                app.aether.core.designsystem.component.FittedName(
                     page.artist.name,
                     Type.name(page.artist.name),
-                    align = TextAlign.Center,
                     modifier = Modifier.padding(horizontal = Space.edge).graphicsLayer { alpha = 1f - logoUp.value },
                 )
                 if (logo != null) {
@@ -219,10 +221,10 @@ internal val Rising = Motion.fluid(0.7f, 1f, 0.002f)
  */
 @OptIn(UnstableApi::class)
 @Composable
-internal fun HeroFilm(url: String, playing: Boolean, onFirstFrame: () -> Unit, modifier: Modifier, mono: Boolean = true, finest: Boolean = false, onVideoAspect: (Float) -> Unit = {}) {
+internal fun HeroFilm(url: String, playing: Boolean, onFirstFrame: () -> Unit, modifier: Modifier, mono: Boolean = true, finest: Boolean = false, onVideoAspect: (Float) -> Unit = {}, playlist: Boolean = true) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val player = remember(url, finest) {
+    val player = remember(url, finest, playlist) {
         val metered = (context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.isActiveNetworkMetered == true
         val side = if (metered) 540 else 1080
         val data = CacheDataSource.Factory()
@@ -243,10 +245,15 @@ internal fun HeroFilm(url: String, playing: Boolean, onFirstFrame: () -> Unit, m
                 // short loop never ran long enough for the player to climb from where it guessed low.
                 .setForceHighestSupportedBitrate(true)
                 .build()
+            // Apple's films are HLS playlists; a song's cover from the community's index is a video file.
             setMediaSource(
-                HlsMediaSource.Factory(data).createMediaSource(
-                    MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8).build(),
-                ),
+                if (playlist) {
+                    HlsMediaSource.Factory(data).createMediaSource(
+                        MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8).build(),
+                    )
+                } else {
+                    ProgressiveMediaSource.Factory(data).createMediaSource(MediaItem.fromUri(url))
+                },
             )
             // The player's own pick lands mid-ladder on Apple's playlists (a 4.9 Mbps copy of a film
             // that has 7, 10 and 20): once the copies are known, the film is set to the richest one

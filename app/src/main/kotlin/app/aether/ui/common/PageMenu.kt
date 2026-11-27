@@ -95,6 +95,8 @@ fun BoxScope.PageCornerMenu(corner: PageCorner, shown: Boolean) {
     val there by animateFloatAsState(if (shown && entries != null) 1f else 0f, Motion.fluid(0.34f, 0.82f, 0.002f), label = "page key")
     if (there <= 0.002f) return
     val open = corner.open && shown
+    // Back folds the menu away first.
+    androidx.activity.compose.BackHandler(enabled = open) { corner.open = false }
     val menu by animateFloatAsState(if (open) 1f else 0f, Motion.fluid(0.34f, 0.86f, 0.002f), label = "page menu")
     if (menu > 0.002f) Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { corner.open = false } })
     GlassCircle(
@@ -158,6 +160,8 @@ fun BoxScope.PageCornerMenu(corner: PageCorner, shown: Boolean) {
  */
 @Composable
 fun ConfirmDialog(title: String, body: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    // Back keeps everything, as a touch outside does; it never takes the page with it.
+    androidx.activity.compose.BackHandler(onBack = onDismiss)
     Box(
         Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.72f)).pointerInput(Unit) { detectTapGestures { onDismiss() } },
         contentAlignment = Alignment.Center,
@@ -208,6 +212,11 @@ fun ExpandingSearch(
     val focus = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     LaunchedEffect(open) { if (open) focus.requestFocus() }
+    // Back closes the field back into its key before it leaves the page.
+    androidx.activity.compose.BackHandler(enabled = open) {
+        focusManager.clearFocus()
+        onOpen(false)
+    }
     BoxWithConstraints(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         val width = 50.dp + (maxWidth - 50.dp) * grow.coerceIn(0f, 1.1f)
         Row(

@@ -73,7 +73,7 @@ class LyricsRepository(
         return result
     }
 
-    private fun shown(lyrics: Lyrics, request: LyricsRequest) = LyricsFormatter.forPlayback(lyrics, request.durationMs)
+    private fun shown(lyrics: Lyrics, request: LyricsRequest) = LyricsFormatter.forPlayback(lyrics, request.durationMs, request.title)
 
     /** Forget every kept answer. */
     fun clear() = cache.clear()

@@ -52,7 +52,7 @@ import kotlin.math.abs
  * Main thread only, like the players.
  */
 internal class Crossfader(
-    private val main: ExoPlayer,
+    private var main: ExoPlayer,
     /** Builds the second player: the same sound path, no audio focus, no notification. */
     private val newHelper: () -> ExoPlayer,
     /** What the rules need to know about the song at a queue position of [main]. */
@@ -99,36 +99,52 @@ internal class Crossfader(
     /** Whether the carried copy is what's heard now. */
     val carriedAudible: Boolean get() = phase == Phase.CARRYING
 
-    init {
-        main.addListener(object : Player.Listener {
-            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                if (!playWhenReady) {
-                    if (carrying) endCarry(CarryReason.PAUSED) else stop()
-                } else {
-                    watch()
-                }
-            }
-
-            // A call or another app taking the sound: the second player has no focus of its own to lose.
-            override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
-                if (playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE) return
+    private val mainListener = object : Player.Listener {
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (!playWhenReady) {
                 if (carrying) endCarry(CarryReason.PAUSED) else stop()
+            } else {
+                watch()
             }
+        }
 
-            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-                when {
-                    movingOn -> Unit
-                    // The listener skipped or sought: whatever was under way ends.
-                    reason == Player.DISCONTINUITY_REASON_SEEK -> if (carrying) endCarry(CarryReason.SOUGHT) else stop()
-                    // The carried song came to its end without a crossfade: [main] has moved on.
-                    reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION && carrying -> endCarry(CarryReason.ENDED)
-                }
-            }
+        // A call or another app taking the sound: the second player has no focus of its own to lose.
+        override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
+            if (playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE) return
+            if (carrying) endCarry(CarryReason.PAUSED) else stop()
+        }
 
-            override fun onPlayerError(error: PlaybackException) {
-                if (carrying) endCarry(CarryReason.FAILED) else stop()
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+            when {
+                movingOn -> Unit
+                // The listener skipped or sought: whatever was under way ends.
+                reason == Player.DISCONTINUITY_REASON_SEEK -> if (carrying) endCarry(CarryReason.SOUGHT) else stop()
+                // The carried song came to its end without a crossfade: [main] has moved on.
+                reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION && carrying -> endCarry(CarryReason.ENDED)
             }
-        })
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            if (carrying) endCarry(CarryReason.FAILED) else stop()
+        }
+    }
+
+    init {
+        main.addListener(mainListener)
+    }
+
+    /**
+     * The session moved to [next] (Automix hands the queue to the player that started the incoming
+     * song): from now on that's the player whose songs are carried and crossfaded. Never mid-carry
+     * or mid-fade; anything under way ends first.
+     */
+    fun adopt(next: ExoPlayer) {
+        if (next === main) return
+        stop()
+        main.removeListener(mainListener)
+        main = next
+        next.addListener(mainListener)
+        watch()
     }
 
     /** The second player, while one exists (the engine keeps its equaliser in step). */
@@ -257,9 +273,12 @@ internal class Crossfader(
     /** End anything under way: the helper falls silent, [main] plays at full volume. */
     fun stop() {
         if (carrying) return endCarry(CarryReason.CANCELLED)
+        // Idle, the volume is someone else's to set (Automix's fades share the player).
         if (phase != Phase.IDLE) finish()
-        main.volume = 1f
     }
+
+    /** Whether a crossfade or a carry is under way. */
+    val busy: Boolean get() = phase != Phase.IDLE
 
     fun release() {
         stop()

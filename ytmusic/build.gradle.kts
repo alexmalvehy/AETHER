@@ -37,6 +37,27 @@ tasks.register<JavaExec>("liveCheck") {
     args = listOfNotNull(providers.gradleProperty("country").orNull)
 }
 
+// Captures one search answer as a fixture, tracking taken out (needs the network).
+// ./gradlew :ytmusic:captureSearch -Pquery="not like us" -Pname=search_songs_explicit -Psongs
+// ./gradlew :ytmusic:captureSearch -Pquery="PpJX2BIPGl4,eVli-tstM5E" -Pname=queue_espresso -Pqueue   (a queue's answer)
+tasks.register<JavaExec>("captureSearch") {
+    group = "verification"
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("app.aether.ytmusic.CaptureSearchKt")
+    workingDir = projectDir
+    args = listOfNotNull(
+        providers.gradleProperty("query").orNull,
+        providers.gradleProperty("name").orNull,
+        when {
+            providers.gradleProperty("songs").isPresent -> "songs"
+            providers.gradleProperty("queue").isPresent -> "queue"
+            providers.gradleProperty("browse").isPresent -> "browse"
+            providers.gradleProperty("next").isPresent -> "next"
+            else -> null
+        },
+    )
+}
+
 // What the music page says about where the visitor is (needs the network).
 tasks.register<JavaExec>("pageCountryCheck") {
     group = "verification"

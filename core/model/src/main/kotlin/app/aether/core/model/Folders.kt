@@ -97,6 +97,8 @@ data class PhoneSong(
     val albumArtist: String? = null,
     val disc: Int = 0,
     val addedAt: Long = 0,
+    /** When its file last changed (seconds). */
+    val modifiedAt: Long = 0,
 )
 
 /** The music on the phone itself, read from the folders the listener chose. */

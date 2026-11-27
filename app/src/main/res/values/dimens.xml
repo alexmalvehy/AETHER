@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The home-screen widgets. -->
+    <dimen name="widget_radius">22dp</dimen>
+    <dimen name="widget_wide_panel_start">150dp</dimen>
+    <dimen name="widget_key_wide">36dp</dimen>
+    <dimen name="widget_key_wide_glyph">11dp</dimen>
+    <dimen name="widget_key_wide_play">42dp</dimen>
+    <dimen name="widget_key_wide_play_glyph">12dp</dimen>
+    <dimen name="widget_key_wide_gap">12dp</dimen>
+    <dimen name="widget_key_square">30dp</dimen>
+    <dimen name="widget_key_square_glyph">9dp</dimen>
+    <dimen name="widget_key_square_play">35dp</dimen>
+    <dimen name="widget_key_square_play_glyph">10dp</dimen>
+    <dimen name="widget_key_square_gap">10dp</dimen>
+    <!-- How far up from its foot the 2×2's cover has gone to black: the name and the keys stand in it. -->
+    <dimen name="widget_square_band">64dp</dimen>
+</resources>

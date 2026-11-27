@@ -173,8 +173,38 @@ internal class VLine(
             return out
         }
 
-        /** The Latin letters of [line], drawn under it and lit as it is. */
+        /** The Latin letters of [line], drawn under it and lit as it is (or, Latin first, its own words under its Latin letters). */
         fun gloss(text: String, line: VLine): VLine = VLine(line.timeMs, text, alignEnd = line.alignEnd, follows = line)
+
+        /**
+         * [line] sung in Latin letters: each of its timed words given in Latin letters ([romanise]: null for
+         * a word with nothing to change) and sung over that word's own time, so the Latin letters light, lift
+         * and swell word by word as its own words do. A word's syllables are its own script's and don't
+         * carry over. A line timed whole is [whole], the line's Latin letters lit whole. The answering vocal
+         * goes the same way.
+         */
+        fun latin(line: VLine, whole: String, romanise: (String) -> String?): VLine {
+            val words = line.words.map { w -> VWord(w.startMs, w.endMs, romanise(w.text) ?: w.text, emptyList()) }
+            return VLine(
+                timeMs = line.timeMs,
+                text = if (words.isEmpty()) whole else joined(words),
+                words = words,
+                sungUntilMs = line.sungUntilMs,
+                background = line.background?.let { b -> latin(b, romanise(b.text) ?: b.text, romanise) },
+                alignEnd = line.alignEnd,
+                origin = line.origin,
+            )
+        }
+
+        /** Latin words with a space between them, and none before a mark that closes onto the word before. */
+        private fun joined(words: List<VWord>): String = buildString {
+            words.forEachIndexed { i, w ->
+                if (i > 0 && w.text.first() !in CLOSING) append(' ')
+                append(w.text)
+            }
+        }
+
+        private const val CLOSING = ",.!?;:)]}…、。，！？"
 
         /**
          * One line: its own text (the spacing and punctuation between the words are the line's, and

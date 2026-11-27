@@ -27,6 +27,8 @@ class AccountPlaylists(
     private val sources: SourceManager,
     private val library: Library,
     private val online: Online,
+    /** The account's playlists this phone keeps a synced copy of ([PlaylistSync]): listed as that copy, not again. */
+    private val linked: () -> Set<String> = { emptySet() },
 ) {
     private val prefs = context.getSharedPreferences("account-playlists", Context.MODE_PRIVATE)
     private val lock = Mutex()
@@ -47,15 +49,17 @@ class AccountPlaylists(
 
     /** Fetches the account's playlists and brings the Library to match. */
     suspend fun sync() = lock.withLock {
-        val raw = (sources.primary.accountPlaylists() as? Outcome.Ok)?.value ?: return@withLock
-        val found = raw.filterNot { app.aether.sources.youtube.YouTubeSource.isLikedMusicPlaylist(it.id) }
+        // A library always holds Liked Music: nothing at all means the answer couldn't be read.
+        val listed = (sources.primary.accountPlaylists() as? Outcome.Ok)?.value?.takeIf { it.isNotEmpty() } ?: return@withLock
+        val copies = linked()
+        val found = listed.filter { it.id.value !in copies }
         val mine = added
         val before = library.savedPlaylists.first().map { it.id.value }.toSet()
         val now = found.map { it.id.value }.toSet()
         // New to the Library: added, and remembered as the sync's own.
         found.forEach { p -> if (p.id.value !in before || p.id.value in mine) library.save(p, keep = true) }
         val fresh = mine + found.map { it.id.value }.filter { it !in before }
-        // The sync's own that the account no longer has: taken away again.
+        // The sync's own that the account no longer has (or that are kept here as a synced copy): taken away again.
         val gone = fresh.filter { it !in now }
         library.savedPlaylists.first().filter { it.id.value in gone }.forEach { library.save(it, keep = false) }
         added = fresh - gone.toSet()

@@ -17,6 +17,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -46,6 +48,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.clipPath
 import app.aether.core.designsystem.theme.FluidSpring
 import app.aether.core.designsystem.theme.FluidValue
+import app.aether.core.designsystem.theme.retained
 
 /** The dial's foot: how far its pivot sits above the bottom of its box. */
 private val Foot = 6.dp
@@ -67,6 +70,9 @@ private const val Marks = 60
  * accessibility services it's a slider with the position as its value.
  *
  * Its box should be twice as wide as it is tall, give or take; the arc is fitted to it.
+ *
+ * [window], when there is one, is where Automix will run this song into the next, as fractions of
+ * the song: that stretch of the dial's inner ring is drawn brighter.
  */
 @Composable
 fun ClockDial(
@@ -77,12 +83,14 @@ fun ClockDial(
     modifier: Modifier = Modifier,
     onScrubbing: (Boolean) -> Unit = {},
     running: Boolean = true,
+    window: () -> Pair<Float, Float>? = { null },
 ) {
     val haptics = LocalHaptics.current
     val positionMs = position.value
     val seek by rememberUpdatedState(onSeek)
     val scrubbingNow by rememberUpdatedState(onScrubbing)
     val head = rememberPlayhead(positionMs, durationMs, playing && running)
+    val hand = head.shown
     // Where the finger has the hand, and where the hand is: it glides after the finger on a stiff
     // spring with no overshoot, so the touch screen's jitter never shows as a jump.
     var scrub by remember { mutableStateOf<Float?>(null) }
@@ -91,7 +99,6 @@ fun ClockDial(
     val scrubbing = scrub != null
     LaunchedEffect(scrubbing) {
         if (!scrubbing) return@LaunchedEffect
-        glide.snap(head.floatValue)
         var last = withFrameNanos { it }
         while (true) {
             val now = withFrameNanos { it }
@@ -100,8 +107,13 @@ fun ClockDial(
             last = now
         }
     }
-    // The words change once a second; only the drawing follows every frame.
-    val second by remember(durationMs) { derivedStateOf { ((scrub ?: head.floatValue) * durationMs).toLong() / 1000 } }
+    // Automix's window, as drawn: a new plan (a song moved into next, a plan refined) glides there; one
+    // that appears comes up where it is, and one let go of fades where it was. Never a jump.
+    val mix = remember { MixArc() }
+    LaunchedEffect(Unit) { snapshotFlow { window() }.collectLatest { mix.glideTo(it) } }
+    // The words change once a second; only the drawing follows every frame. They say where the song
+    // is (or where the finger has it), never where a travelling hand happens to be.
+    val second by remember(durationMs) { derivedStateOf { ((scrub ?: head.time.floatValue) * durationMs).toLong() / 1000 } }
     val shownMs = second * 1000
 
     Box(
@@ -140,6 +152,9 @@ fun ClockDial(
                             val across = abs(moved.x * out.x + moved.y * out.y)
                             if (round < across * 0.9f) return@awaitEachGesture
                             scrubbing = true
+                            // The hand sets off from where it's drawn, this frame: nothing to wait for.
+                            glide.snap(hand.floatValue)
+                            glided = hand.floatValue
                             scrubbingNow(true)
                             haptics.light()
                         }
@@ -154,6 +169,10 @@ fun ClockDial(
                         if (m != mark) { if (mark >= 0) haptics.tick(); mark = m }
                     }
                     val target = scrub
+                    if (scrubbing && target != null) {
+                        // The hand stays where the finger left it while the song gets there.
+                        head.landing(glided, target)
+                    }
                     scrub = null
                     if (scrubbing) scrubbingNow(false)
                     if (scrubbing && target != null) {
@@ -164,7 +183,10 @@ fun ClockDial(
             },
     ) {
         Spacer(
-            Modifier.fillMaxSize().drawWithCache {
+            // A picture of itself, drawn again only when its hand moves (twelve times a second at
+            // most): under something that moves every frame (Automix's dots), its sixty marks aren't
+            // drawn again on each one.
+            Modifier.fillMaxSize().retained().drawWithCache {
                 // The marks, made once: every short mark one path, every long one another. A frame
                 // then draws them twice (dim, and bright where the hand has passed, through a wedge).
                 val r = radiusOf(size.width, size.height, Foot.toPx(), Crown.toPx())
@@ -187,7 +209,7 @@ fun ClockDial(
                 val wedge = Path()
                 val reach = r + 16.dp.toPx()
                 onDrawBehind {
-                    val shown = if (scrub != null) glided else head.floatValue
+                    val shown = if (scrub != null) glided else hand.floatValue
                     drawPath(minor, Ink.White.copy(alpha = 0.18f), style = minorStroke)
                     drawPath(major, Ink.White.copy(alpha = 0.4f), style = majorStroke)
                     if (shown > 0f) {
@@ -211,6 +233,20 @@ fun ClockDial(
                         size = androidx.compose.ui.geometry.Size(inner * 2, inner * 2),
                         style = Stroke(1.dp.toPx()),
                     )
+                    // Where Automix will mix: that stretch of the inner ring, brighter.
+                    if (mix.shown > 0.002f) {
+                        val from = mix.start.coerceIn(0f, 1f)
+                        val to = mix.end.coerceIn(from, 1f)
+                        if (to - from > 0.002f) drawArc(
+                            Ink.White.copy(alpha = 0.72f * mix.shown.coerceIn(0f, 1f)),
+                            startAngle = 180f + 180f * from,
+                            sweepAngle = 180f * (to - from),
+                            useCenter = false,
+                            topLeft = Offset(pivot.x - inner, pivot.y - inner),
+                            size = androidx.compose.ui.geometry.Size(inner * 2, inner * 2),
+                            style = Stroke(2.dp.toPx(), cap = StrokeCap.Round),
+                        )
+                    }
                     // The hand: thin, red, from inside the marks to just past them, with a bead at its foot.
                     val a = PI.toFloat() * (1f - shown)
                     val dir = Offset(cos(a), -sin(a))
@@ -230,27 +266,174 @@ fun ClockDial(
 
 private fun radiusOf(width: Float, height: Float, foot: Float, crown: Float): Float = min(width / 2f - crown, height - foot - crown).coerceAtLeast(1f)
 
+/** Further than this between where the hand is and where the song is, the hand travels there. */
+private const val JumpFraction = 0.015f
+
 /**
- * The song's position as a fraction, moving smoothly between the player's reports while it plays:
- * each report sets where it is, and the frames in between carry it on at the speed of time.
+ * Where the song is, as a fraction ([time]), and where the hand is drawn ([shown]). They're the same
+ * but when the song jumps (another song, a skip back, a line of the lyrics touched): then the hand
+ * travels to it on a spring and doesn't leap, so a new song's hand sweeps back to its start.
+ */
+@androidx.compose.runtime.Stable
+private class Playhead {
+    val time = mutableFloatStateOf(0f)
+    val shown = mutableFloatStateOf(0f)
+    private var reportMs = 0L
+    private var reportAt = 0L
+    private var durationMs = 0L
+    private var playing = false
+    private var placed = false
+
+    /** A seek just made by the finger: where the song will be, until the player says so. */
+    private var expected = -1f
+    private var expectedAt = 0L
+    val travel = FluidValue(0f, FluidSpring(0.55f, 1f), unit = 1f / 900f)
+    var traveling = false
+    var lastFrame = 0L
+
+    /** Where the song is at [now] (`System.nanoTime()`), from the player's last report. */
+    fun truthAt(now: Long): Float {
+        if (durationMs <= 0) return 0f
+        val ms = reportMs + if (playing) ((now - reportAt) / 1_000_000).coerceAtLeast(0L) else 0L
+        return (ms.toFloat() / durationMs).coerceIn(0f, 1f)
+    }
+
+    /** The player's word: where the song is; and whether the hand should travel there. */
+    fun report(positionMs: Long, duration: Long, isPlaying: Boolean, now: Long) {
+        val sameSong = duration == durationMs
+        reportMs = positionMs
+        reportAt = now
+        durationMs = duration
+        playing = isPlaying
+        // A seek the finger made shows where it went until the player has got there.
+        if (expected >= 0f) {
+            val there = sameSong && abs(truthAt(now) - expected) < JumpFraction
+            if (there || now - expectedAt > ExpectNanos || !sameSong) {
+                expected = -1f
+            } else {
+                reportMs = (expected * durationMs).toLong() + if (isPlaying) (now - expectedAt) / 1_000_000 else 0L
+            }
+        }
+        val target = truthAt(now)
+        time.floatValue = target
+        when {
+            !placed -> {
+                placed = true
+                shown.floatValue = target
+            }
+            traveling -> Unit
+            abs(target - shown.floatValue) > JumpFraction -> {
+                travel.snap(shown.floatValue)
+                travel.retarget(target)
+                traveling = true
+                lastFrame = 0L
+            }
+            else -> shown.floatValue = target
+        }
+    }
+
+    /** A scrub let go at [at] (where the hand is) for [target]: the song is on its way there. */
+    fun landing(at: Float, target: Float) {
+        traveling = false
+        shown.floatValue = at
+        expected = target
+        expectedAt = System.nanoTime()
+        reportMs = (target * durationMs).toLong()
+        reportAt = expectedAt
+        time.floatValue = target
+        if (abs(at - target) > 1e-4f) {
+            travel.snap(at)
+            travel.retarget(target)
+            traveling = true
+            lastFrame = 0L
+        }
+    }
+
+    private companion object {
+        /** A seek that the player hasn't confirmed by then is taken as having gone where the player says. */
+        const val ExpectNanos = 1_500_000_000L
+    }
+}
+
+/**
+ * The song's position, moving smoothly between the player's reports while it plays: each report says
+ * where it is, and the frames in between carry it on at the speed of time. A jump is travelled.
  */
 @Composable
-private fun rememberPlayhead(positionMs: Long, durationMs: Long, playing: Boolean): androidx.compose.runtime.MutableFloatState {
-    val head = remember { mutableFloatStateOf(0f) }
+private fun rememberPlayhead(positionMs: Long, durationMs: Long, playing: Boolean): Playhead {
+    val head = remember { Playhead() }
     LaunchedEffect(positionMs, durationMs, playing) {
-        fun at(ms: Long) = if (durationMs > 0) (ms.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
-        head.floatValue = at(positionMs)
-        if (!playing || durationMs <= 0) return@LaunchedEffect
-        // Twelve steps a second: at a song's pace the hand moves a tenth of a degree a step, far
-        // under a pixel, and the screen isn't drawn again on every one of its 90 frames for nothing.
-        val start = withFrameNanos { it }
-        var last = start
-        while (true) withFrameNanos { now ->
-            if (now - last >= 83_000_000L) {
-                last = now
-                head.floatValue = at(positionMs + (now - start) / 1_000_000)
+        head.report(positionMs, durationMs, playing, System.nanoTime())
+        var last = 0L
+        while (head.traveling || (playing && durationMs > 0)) {
+            withFrameNanos { now ->
+                if (head.traveling) {
+                    // Travelling: every frame, after a target that moves with the music, until it's there.
+                    val dt = if (head.lastFrame == 0L) 1f / 90f else ((now - head.lastFrame) / 1e9f).coerceIn(0f, 0.05f)
+                    head.lastFrame = now
+                    val at = head.truthAt(now)
+                    head.travel.retarget(at)
+                    head.shown.floatValue = head.travel.step(dt)
+                    head.time.floatValue = at
+                    if (head.travel.resting) head.traveling = false
+                } else if (now - last >= 83_000_000L) {
+                    // Twelve steps a second: at a song's pace the hand moves a tenth of a degree a step,
+                    // far under a pixel, and the screen isn't drawn again on every frame for nothing.
+                    last = now
+                    val at = head.truthAt(now)
+                    head.time.floatValue = at
+                    head.shown.floatValue = at
+                }
             }
         }
     }
     return head
+}
+
+/**
+ * Automix's window on the dial as it's drawn ([start], [end] as fractions of the song, [shown] how
+ * brightly). A new window glides from the one drawn, keeping its speed if it was already moving; one
+ * appearing comes up in place, with nothing sliding in from elsewhere; one let go of fades where it was.
+ */
+@androidx.compose.runtime.Stable
+private class MixArc {
+    var start by mutableFloatStateOf(0f)
+        private set
+    var end by mutableFloatStateOf(0f)
+        private set
+    var shown by mutableFloatStateOf(0f)
+        private set
+    private val from = FluidValue(0f, Glides, unit = 1f / 900f)
+    private val to = FluidValue(0f, Glides, unit = 1f / 900f)
+    private val alpha = FluidValue(0f, Fades, unit = 1f / 255f)
+
+    suspend fun glideTo(target: Pair<Float, Float>?) {
+        if (target != null) {
+            if (shown <= 0.002f) {
+                from.snap(target.first)
+                to.snap(target.second)
+            } else {
+                from.retarget(target.first)
+                to.retarget(target.second)
+            }
+            alpha.retarget(1f)
+        } else {
+            alpha.retarget(0f)
+        }
+        var last = withFrameNanos { it }
+        while (true) {
+            val now = withFrameNanos { it }
+            val dt = ((now - last) / 1e9f).coerceIn(0f, 1f / 30f)
+            last = now
+            start = from.step(dt)
+            end = to.step(dt)
+            shown = alpha.step(dt)
+            if (from.resting && to.resting && alpha.resting) break
+        }
+    }
+
+    private companion object {
+        val Glides = FluidSpring(0.55f, 1f)
+        val Fades = FluidSpring(0.4f, 1f)
+    }
 }

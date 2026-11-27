@@ -1,9 +1,11 @@
 package app.aether.ui
 
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -54,6 +56,9 @@ enum class Tab(val label: String, val root: Route) {
     Profile("Profile", Route.Profile),
 }
 
+/** A page further off than this (of the screen's width) is still arriving. */
+private const val ArrivingFrom = 0.1f
+
 /** Where a page is in its life on a stack. */
 enum class PagePhase {
     /** Made and waiting, out of sight, for its first opening or its next. */
@@ -78,15 +83,36 @@ class PageEntry internal constructor(val route: Route, val id: Long, phase: Page
     var phase by mutableStateOf(phase)
         internal set
 
+    /**
+     * Where it's drawn among its room's pages: in the order they were opened, the latest on top. A
+     * page still on its way out when another is opened stays under the new one, its folder with it,
+     * and finishes going there, as one app closing into its icon goes on under the next one opening.
+     */
+    internal var order by mutableLongStateOf(id)
+
+    /** The folder it was opened from, as it was touched: its head stands open before the page has loaded. */
+    internal var preview by mutableStateOf<FolderPreview?>(null)
+
     /** It has come to rest in its place. A page holds back its long lists until then. */
     val landed: Boolean by derivedStateOf { phase == PagePhase.Open && slide.value <= 0.001f }
+
+    /** Still coming in: on the stack, and not yet most of the way. Read when asked, not followed. */
+    internal val arriving: Boolean get() = phase == PagePhase.Open && slide.value > ArrivingFrom
 
     /** The page's own frame, once it's been laid out: where things on it are measured from. */
     internal var frame: LayoutCoordinates? = null
 
     /** The folder held open at the head of this page, when it has one, and the trip that brought it. */
     internal var head: LayoutCoordinates? = null
-    internal var trip: FolderTrip? = null
+
+    /** A page opened from a folder grows out of it, as an app grows out of its icon. */
+    internal var trip by mutableStateOf<FolderTrip?>(null)
+
+    /** The page's own list, so a drag on a page that's leaving can scroll the page coming back under it. */
+    internal var list: LazyListState? = null
+
+    /** A finger on it while it leaves: it goes once the finger does, so a drag it hands on never stops part way. */
+    internal var held by mutableStateOf(false)
 }
 
 /**
@@ -180,10 +206,14 @@ class Navigator {
     /** How deep [tab] is. */
     fun depthOf(tab: Tab): Int = stacks.getValue(tab).size
 
-    /** A room's pages, bottom first: what's kept, its stack, then any on their way out. */
+    /**
+     * A room's pages as they're drawn, bottom first: what's kept, then its stack and any on their way
+     * out, in the order they were opened. A page left goes out over the one it uncovers; one opened while
+     * another is still going comes in over it.
+     */
     fun pagesOf(tab: Tab): List<PageEntry> {
         val kept = if (tab == settingsRoom && keepsMade && settings.phase == PagePhase.Kept) listOf(settings) else emptyList()
-        return kept + stacks.getValue(tab) + leaving.getValue(tab)
+        return kept + (stacks.getValue(tab) + leaving.getValue(tab)).sortedBy { it.order }
     }
 
     /** The page on top of [tab]'s own stack. */
@@ -195,11 +225,38 @@ class Navigator {
             if (settings.phase != PagePhase.Open) {
                 leaving.getValue(settingsRoom).remove(settings)
                 settings.phase = PagePhase.Open
+                settings.order = nextId++
                 stacks.getValue(settingsRoom) += settings
             }
             return
         }
-        if (stack.last().route != route) stack += PageEntry(route, nextId++, PagePhase.Open)
+        if (stack.last().route == route) return
+        // One page arriving at a time. Another asked for while the top one is still coming in (two
+        // folders touched at once, a second card under another finger) is ignored, as iOS ignores
+        // touches while it pushes a page: two at once flew two folders onto one another.
+        if (stack.last().arriving) return
+        // A page on its way out, opened again (a folder touched as it flies home): the same page
+        // comes back from where it is, at the speed it had, with its list where it was. Only from the
+        // top: one already gone under a newer page would jump out over it, so a new one comes instead.
+        val going = leaving.getValue(tab).lastOrNull { it.route == route }
+        if (going != null && (stack + leaving.getValue(tab)).all { it === going || it.order < going.order }) {
+            leaving.getValue(tab).remove(going)
+            going.phase = PagePhase.Open
+            going.order = nextId++
+            stack += going
+            return
+        }
+        stack += PageEntry(route, nextId++, PagePhase.Open)
+    }
+
+    /** The page under [page] in its room: the one it covers. */
+    fun beneath(page: PageEntry): PageEntry? {
+        for (t in Tab.entries) {
+            val pages = pagesOf(t)
+            val i = pages.indexOf(page)
+            if (i > 0) return pages.subList(0, i).lastOrNull { it.phase != PagePhase.Kept && it.phase != PagePhase.Leaving }
+        }
+        return null
     }
 
     fun back(): Boolean = when {

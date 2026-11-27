@@ -35,4 +35,9 @@ dependencies {
     api(libs.kyant.shapes)
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
+    // A sheet answers Back itself while it's open.
+    implementation(libs.androidx.activity.compose)
+    // The pure rules (how a name is fitted): `./gradlew :core:designsystem:testDebugUnitTest`.
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }

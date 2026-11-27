@@ -1,6 +1,7 @@
 // After BitChord's lyrics providers (GPL-3.0): lrc.red, BiniLyrics, BetterLyrics, LyricsPlus, Unison, KuGou.
 package app.aether.core.lyrics
 
+import app.aether.core.lyrics.matching.ArtistNames
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -31,7 +32,11 @@ private fun JsonElement?.str(): String? = (this as? JsonPrimitive)?.contentOrNul
 private fun JsonElement?.num(): Double? = (this as? JsonPrimitive)?.let { p -> p.longOrNull?.toDouble() ?: p.doubleOrNull ?: p.contentOrNull?.toDoubleOrNull() }
 private operator fun JsonElement?.get(key: String): JsonElement? = (this as? JsonObject)?.get(key)
 
-/** A library asked over HTTP: a 200's body, a 404 as "it hasn't the song", anything else a failure. */
+/**
+ * A library asked over HTTP: a 200's body; a 404 as "it hasn't the song", and so a 401 or 403 (a library
+ * that wants a key for what it hasn't kept, as BetterLyrics now does, hasn't this song for us); anything
+ * else a failure.
+ */
 abstract class LyricsLibrary(private val http: LyricsHttp) : LyricsProvider {
     /** Whether it can time words, not only lines: what it's asked first for. */
     abstract val timesWords: Boolean
@@ -41,7 +46,7 @@ abstract class LyricsLibrary(private val http: LyricsHttp) : LyricsProvider {
         val reply = http.reply(url)
         return when (reply.code) {
             in 200..299 -> reply.body
-            404, 204 -> null
+            404, 204, 401, 403 -> null
             429 -> throw RateLimit(reply.retryAfterSeconds?.times(1000) ?: 60_000L)
             else -> throw IOException("HTTP ${reply.code}")
         }
@@ -229,7 +234,13 @@ class Unison(http: LyricsHttp) : LyricsLibrary(http) {
     }
 }
 
-/** KuGou: lines in time, strongest outside the English-speaking catalogue (Chinese, Korean, Japanese). */
+/**
+ * KuGou: lines in time, strongest outside the English-speaking catalogue (Chinese, Korean, Japanese).
+ * Every answer it gives is held to the song: its song search answers other songs of the same name, and
+ * its lyrics search, asked for one recording, answers files made for others (asked for Pennyy's
+ * "Espresso" it gave Tchaikovsky's "June", for Kizo's a remix by someone else and "Spice Up Your Life";
+ * measured 2026-11-19). A song, or a file, that isn't this song by its own title and artist is passed over.
+ */
 class KuGou(http: LyricsHttp) : LyricsLibrary(http) {
     override val id = "kugou"
     override val attribution = LyricsAttribution("KuGou", "https://www.kugou.com")
@@ -239,16 +250,19 @@ class KuGou(http: LyricsHttp) : LyricsLibrary(http) {
         val keyword = enc("${request.title.unbracketed()} - ${request.artist.unbracketed()}")
         val seconds = seconds(request)?.toInt() ?: -1
         val songs = fetch("https://mobileservice.kugou.com/api/v3/search/song?version=9108&plat=0&pagesize=8&showtype=0&keyword=$keyword")
-        // Only cuts of about the same length: otherwise the first result for a common title is as likely a cover.
+        // Only this song, in cuts of about the same length: otherwise the first result for a common title is
+        // as likely a cover, a remix, or another song of the name.
         val hashes = songs?.let { body ->
             (json.parseToJsonElement(body)["data"]["info"] as? JsonArray).orEmpty().mapNotNull { info ->
                 val hash = info["hash"].str() ?: return@mapNotNull null
                 val length = info["duration"].num()?.toInt() ?: -1
-                if (seconds > 0 && abs(length - seconds) > TOLERANCE_S) null else hash to abs(length - seconds)
+                if (seconds > 0 && abs(length - seconds) > TOLERANCE_S) return@mapNotNull null
+                if (!isThisSong(request, info["songname"].str(), info["singername"].str(), info["album_name"].str())) return@mapNotNull null
+                hash to abs(length - seconds)
             }.sortedBy { it.second }.map { it.first }
         }.orEmpty()
-        val candidate = hashes.take(3).firstNotNullOfOrNull { hash -> candidates("hash=${enc(hash)}").firstOrNull() }
-            ?: candidates("keyword=$keyword" + if (seconds > 0) "&duration=${seconds * 1000}" else "").firstOrNull()
+        val candidate = hashes.take(3).firstNotNullOfOrNull { hash -> candidates(request, "hash=${enc(hash)}", seconds).firstOrNull() }
+            ?: candidates(request, "keyword=$keyword" + if (seconds > 0) "&duration=${seconds * 1000}" else "", seconds).firstOrNull()
             ?: return null
         val body = fetch("https://lyrics.kugou.com/download?fmt=lrc&charset=utf8&client=pc&ver=1&id=${enc(candidate.first)}&accesskey=${enc(candidate.second)}") ?: return null
         val content = json.parseToJsonElement(body)["content"].str() ?: return null
@@ -257,14 +271,44 @@ class KuGou(http: LyricsHttp) : LyricsLibrary(http) {
         return LrcParser.synced(withoutCredits(lrc))
     }
 
-    private suspend fun candidates(query: String): List<Pair<String, String>> {
+    /** The lyric files it offers for [query] that are this song's, by their own title, artist and length. */
+    private suspend fun candidates(request: LyricsRequest, query: String, seconds: Int): List<Pair<String, String>> {
         val body = fetch("https://lyrics.kugou.com/search?ver=1&man=yes&client=pc&$query") ?: return emptyList()
         return (json.parseToJsonElement(body)["candidates"] as? JsonArray).orEmpty().mapNotNull { c ->
             val id = c["id"].str() ?: return@mapNotNull null
             val key = c["accesskey"].str() ?: return@mapNotNull null
+            val length = c["duration"].num()?.toLong()?.let { (it + 500) / 1000 }?.toInt()
+            if (seconds > 0 && length != null && length > 0 && abs(length - seconds) > TOLERANCE_S) return@mapNotNull null
+            if (!isThisSong(request, c["song"].str(), c["singer"].str(), null)) return@mapNotNull null
             id to key
         }
     }
+
+    /**
+     * Whether KuGou's [title] by [artist] is the song asked for: the same title and version, by a shared
+     * artist (PODIUM's rules, as every library is held to). Its own length check is KuGou's, and looser:
+     * its cuts run a few seconds off the catalogue's.
+     */
+    private fun isThisSong(request: LyricsRequest, title: String?, artist: String?, album: String?): Boolean {
+        if (title.isNullOrBlank() || artist.isNullOrBlank()) return false
+        val asked = request.copy(durationMs = null)
+        if (LyricsMatcher.matches(asked, LyricsMatcher.Candidate(title, artist, album, null))) return true
+        // The same artist written in the other Chinese script (周杰倫 asked, 周杰伦 filed): then the title
+        // and its version must still be the song's.
+        return sameHanName(request.artist, artist) && LyricsMatcher.matches(asked, LyricsMatcher.Candidate(title, request.artist, album, null))
+    }
+
+    /**
+     * Whether two credits name someone the same in Chinese characters, one written traditional and one
+     * simplified: names of the same length, agreeing in at least half their characters, place by place.
+     */
+    private fun sameHanName(a: String, b: String): Boolean {
+        val ours = ArtistNames.split(a).map { it.trim() }.filter(::allHan)
+        val theirs = ArtistNames.split(b).flatMap { it.split('(', '（', ')', '）') }.map { it.trim() }.filter(::allHan)
+        return ours.any { x -> theirs.any { y -> x.length == y.length && x.length >= 2 && x.indices.count { x[it] == y[it] } * 2 >= x.length } }
+    }
+
+    private fun allHan(name: String): Boolean = name.isNotEmpty() && name.all { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.HAN }
 
     private fun String.unbracketed(): String = replace(Regex("""[(（].*?[)）]"""), "").trim().ifBlank { this }
 

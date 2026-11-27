@@ -38,15 +38,18 @@ import app.aether.core.designsystem.theme.Type
 import app.aether.core.model.PlaybackState
 import app.aether.core.model.PlaybackStatus
 import app.aether.ui.LocalActions
+import app.aether.core.designsystem.motion.anchor
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
  * The song that's playing, wherever you are: a capsule of glass above the rooms. Tap or lift it to
  * open Now Playing (its play and next keys only do what they say); a hairline of light along its
- * foot is where the song has got to.
+ * foot is where the song has got to. Now Playing grows out of it ([PlayerWindow]), so it says where
+ * it and its cover are. [face] draws only what's written on it (no glass, no cover, nothing to
+ * touch): the island's copy of it, riding the island's top edge for the first moment of the way.
  */
 @Composable
-fun MiniPlayer(state: PlaybackState, onOpen: () -> Unit, modifier: Modifier = Modifier) {
+fun MiniPlayer(state: PlaybackState, onOpen: () -> Unit, modifier: Modifier = Modifier, face: Boolean = false) {
     val track = state.current ?: return
     val actions = LocalActions.current
     val haptics = LocalHaptics.current
@@ -55,24 +58,29 @@ fun MiniPlayer(state: PlaybackState, onOpen: () -> Unit, modifier: Modifier = Mo
         modifier
             .fillMaxWidth()
             .height(64.dp)
-            .semantics { contentDescription = "Now playing: ${track.title}, ${track.artistLine}. Open" }
-            .liquidGlass(Corners.Pill, GlassWeight.Control, liquid)
-            .liquidTouch(liquid, LocalReduceMotion.current, childrenFirst = true) { onOpen() }
-            .pointerInput(Unit) { detectVerticalDragGestures { _, dy -> if (dy < -12) onOpen() } },
+            .then(
+                if (face) Modifier else Modifier
+                    .anchor(actions.anchors, PillKey)
+                    .semantics { contentDescription = "Now playing: ${track.title}, ${track.artistLine}. Open" }
+                    .liquidGlass(Corners.Pill, GlassWeight.Control, liquid)
+                    .liquidTouch(liquid, LocalReduceMotion.current, childrenFirst = true) { onOpen() }
+                    .pointerInput(Unit) { detectVerticalDragGestures { _, dy -> if (dy < -12) onOpen() } },
+            ),
     ) {
         Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 4.dp).align(Alignment.Center), verticalAlignment = Alignment.CenterVertically) {
-            TreatedArtwork(track.artwork, ArtTreatment.Original, Modifier.size(44.dp).clip(Corners.Pill), sizeHintPx = 160)
+            if (face) Spacer(Modifier.size(44.dp))
+            else TreatedArtwork(track.artwork, ArtTreatment.Original, Modifier.size(44.dp).anchor(actions.anchors, PillArtKey).clip(Corners.Pill), sizeHintPx = 160)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Txt(track.title, Type.TitleSmall, maxLines = 1)
+                app.aether.core.designsystem.component.MarkedLine(track.title, track.explicit, Type.TitleSmall)
                 Txt(if (state.status == PlaybackStatus.ERROR) state.error ?: "" else track.artistLine, Type.Meta, color = Ink.Grey, maxLines = 1)
             }
             IconAction(
                 if (state.isPlaying || state.status == PlaybackStatus.BUFFERING || state.status == PlaybackStatus.LOADING) Glyph.Pause else Glyph.Play,
                 if (state.isPlaying) "Pause" else "Play",
-                { haptics.strong(); actions.playback.toggle() },
+                { if (!face) { haptics.strong(); actions.playback.toggle() } },
             )
-            IconAction(Glyph.Next, "Next", { haptics.strong(); actions.playback.next() })
+            IconAction(Glyph.Next, "Next", { if (!face) { haptics.strong(); actions.playback.next() } })
         }
         // The position is read while drawing: a tick redraws this line and nothing else.
         val position = actions.playback.position.collectAsStateWithLifecycle()

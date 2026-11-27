@@ -7,6 +7,14 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.unit.toSize
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -92,15 +100,19 @@ fun BoxScope.EdgeBlur(edge: Edge, height: Dp, modifier: Modifier = Modifier) {
     // Two frosts of rising strength, each recorded at a quarter of the screen's resolution: the blur
     // hides the upscale, and the edge costs a sixteenth of what it did. Two, not one: a single frost
     // faded in shows the sharp page ghosting through it where the fade is half way.
+    // Each fades in by its depth inside that quarter-resolution recording. Faded at full resolution, it
+    // took a layer of the zone's whole size of its own, drawn again on every frame the page moved
+    // under it (measured on the A059: the two edges' frosts were half of a scroll's dropped frames).
     val layers = if (top) listOf(6.dp to 1f, 22.dp to 0.62f) else listOf(8.dp to 1f, 24.dp to 0.62f)
+    var zoneSize by remember { mutableStateOf(Size.Zero) }
     layers.forEach { (radius, reach) ->
+        // From the screen's edge to the zone's inner end, and held beyond both: past the inner end the
+        // blur's margin stays clear, so no frost reaches into the page.
+        val stops = if (top) arrayOf(0f to Color.Black, reach * 0.55f to Color.Black, reach to Color.Transparent)
+        else arrayOf((1f - reach) to Color.Transparent, (1f - reach * 0.55f) to Color.Black, 1f to Color.Black)
         Box(
             zone
-                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                .drawWithContent {
-                    drawContent()
-                    drawRect(along(0f to Color.Black, reach * 0.55f to Color.Black, reach to Color.Transparent), blendMode = BlendMode.DstIn)
-                }
+                .onSizeChanged { zoneSize = it.toSize() }
                 .drawBackdrop(
                     backdrop = backdrop,
                     shape = { RectangleShape },
@@ -108,6 +120,21 @@ fun BoxScope.EdgeBlur(edge: Edge, height: Dp, modifier: Modifier = Modifier) {
                     highlight = null,
                     shadow = null,
                     backdropScale = EdgeScale,
+                    // Nothing in it to clip: no layer of its own for that.
+                    clipContent = false,
+                    onDrawBackdrop = { drawPage ->
+                        drawPage()
+                        // Drawn in the zone's own measure, inside the quarter-resolution recording.
+                        val z = zoneSize
+                        if (z.height > 0f) {
+                            drawRect(
+                                Brush.verticalGradient(*stops, startY = 0f, endY = z.height),
+                                topLeft = Offset(-z.height, -z.height),
+                                size = Size(z.width + z.height * 2f, z.height * 3f),
+                                blendMode = BlendMode.DstIn,
+                            )
+                        }
+                    },
                 ),
         )
     }

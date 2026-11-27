@@ -358,8 +358,19 @@ internal object YouTubeMusicParser {
             val (name, r) = block.renderer() ?: continue
             when (name) {
                 "musicCardShelfRenderer" -> {
-                    cardItem(r)?.let(items::add)
-                    r.at("contents").arr.mapNotNullTo(items) { item(it) }
+                    val card = cardItem(r)
+                    card?.let(items::add)
+                    // A top result's songs are the card's own ("Song • 2:49") and don't name who made
+                    // them: an artist's or an album's card lends them its artists, by its page, not its words.
+                    val by = when (card) {
+                        is Artist -> listOf(Ref(card.title, card.browseId))
+                        is Album -> card.artists
+                        else -> emptyList()
+                    }
+                    r.at("contents").arr.mapNotNullTo(items) { entry ->
+                        val found = item(entry)
+                        if (found is Song && found.artists.isEmpty() && by.isNotEmpty()) found.copy(artists = by) else found
+                    }
                 }
                 "musicShelfRenderer" -> {
                     val hint = hintForTitle(r.at("title").text())
@@ -381,6 +392,26 @@ internal object YouTubeMusicParser {
     fun searchContinuation(json: JsonObject, hint: Hint = Hint.NONE): Page<Item> {
         val (entries, continuation) = continuationEntries(json)
         return Page(entries.mapNotNull { item(it, hint) }, continuation)
+    }
+
+    /**
+     * The length of every song in a queue's answer ([YouTubeMusicClient.queue]), by its id: a song given
+     * with its other version (the audio beside the video) has both read.
+     */
+    fun lengths(json: JsonObject): Map<String, Long> {
+        val out = LinkedHashMap<String, Long>()
+        for (data in json.at("queueDatas").arr) {
+            val content = data.at("content") ?: continue
+            val wrapper = content.at("playlistPanelVideoWrapperRenderer")
+            val panels = listOfNotNull(content.at("playlistPanelVideoRenderer"), wrapper.at("primaryRenderer", "playlistPanelVideoRenderer")) +
+                wrapper.at("counterpart").arr.mapNotNull { it.at("counterpartRenderer", "playlistPanelVideoRenderer") }
+            for (panel in panels) {
+                val id = panel.at("videoId").str ?: continue
+                val ms = panel.at("lengthText").text()?.trim()?.let(::parseDuration) ?: continue
+                out.putIfAbsent(id, ms)
+            }
+        }
+        return out
     }
 
     fun suggestions(json: JsonObject): Suggestions {
@@ -466,8 +497,16 @@ internal object YouTubeMusicParser {
             trackCount = counts,
             continuation = shelf?.let { continuationOf(it) },
             isAlbum = albumPage,
+            // Only the listener's own playlists come wrapped in the header that offers to edit them.
+            editable = !albumPage && json.findFirst("musicEditablePlaylistDetailHeaderRenderer") != null,
         )
     }
+
+    /** The id of a playlist just made in the account; null when the answer has none. */
+    fun createdPlaylist(json: JsonObject): String? = json.at("playlistId").str?.takeIf { it.isNotBlank() }
+
+    /** Whether the account took a playlist's changes. */
+    fun edited(json: JsonObject): Boolean = json.at("status").str == "STATUS_SUCCEEDED"
 
     fun songsContinuation(json: JsonObject): Page<Song> {
         val (entries, continuation) = continuationEntries(json)
@@ -550,6 +589,22 @@ internal object YouTubeMusicParser {
             lyrics = tabs.firstOrNull { it.browseId.startsWith("MPLY") },
             related = tabs.firstOrNull { it.browseId.startsWith("MPTR") },
         )
+    }
+
+    /**
+     * The song each music video in a queue's answer stands for, where YouTube Music pairs them (its own
+     * Song/Video switch, which it offers signed in only): the video's id to the song. BitChord's
+     * `parseWatchQueue(preferAudio)`, as a map.
+     */
+    fun songVersions(json: JsonObject): Map<String, Song> {
+        val out = LinkedHashMap<String, Song>()
+        for (wrapper in json.findAll("playlistPanelVideoWrapperRenderer")) {
+            val halves = listOfNotNull(wrapper.at("primaryRenderer")) + wrapper.at("counterpart").arr.mapNotNull { it.at("counterpartRenderer") }
+            val songs = halves.mapNotNull { item(it) as? Song }
+            val song = songs.firstOrNull { it.kind == MediaKind.SONG } ?: continue
+            songs.filter { it.kind == MediaKind.MUSIC_VIDEO || it.kind == MediaKind.VIDEO }.forEach { out.putIfAbsent(it.videoId, song) }
+        }
+        return out
     }
 
     fun upNextContinuation(json: JsonObject): Page<Song> {
